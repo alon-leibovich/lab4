@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent traffic</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --raised: #f0efec;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --line: #e1e0d9;
+  --line-2: #c3c2b7;
+  --you: #2a78d6;
+  --you-fill: #cde2fb;
+  --tool: #eb6834;
+  --model: #1baf7a;
+  --critical: #d03b3b;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --raised: #2c2c2a;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --line: #2c2c2a;
+    --line-2: #383835;
+    --you: #3987e5;
+    --you-fill: #104281;
+    --tool: #d95926;
+    --model: #199e70;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+pre, code { font-family: var(--mono); font-size: 12.5px; }
+pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Sidebar */
+#sidebar {
+  width: 230px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+}
+#sidebar h1 { margin: 0; padding: 14px 14px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+#threads { flex: 1; overflow-y: auto; }
+.entry { display: block; width: 100%; padding: 7px 14px; border-left: 3px solid transparent; }
+.entry:hover { background: var(--raised); }
+.entry[aria-current="true"] { background: var(--raised); border-left-color: var(--ink); font-weight: 600; }
+.entry .row { display: flex; gap: 6px; justify-content: space-between; }
+.entry .snippet {
+  display: block;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#conn { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
+
+/* Main pane */
+#main { position: relative; flex: 1; min-width: 0; }
+#pane { height: 100%; overflow-y: auto; }
+#log { max-width: 960px; margin: 0 auto; padding: 16px 24px 56px; }
+#jump {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  background: var(--ink);
+  color: var(--page);
+  border-radius: 16px;
+  font-weight: 600;
+}
+#jump[hidden] { display: none; }
+.empty { padding: 48px 0; color: var(--ink-2); text-align: center; }
+.item { margin: 8px 0; }
+.label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+.toggle { margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.toggle:hover { color: var(--ink); text-decoration: underline; }
+.cursor { font-weight: 400; color: var(--ink-2); }
+
+/* YOU: right-aligned bubble */
+.you { display: flex; justify-content: flex-end; }
+.bubble { max-width: 75%; padding: 8px 12px; background: var(--you-fill); border: 1px solid var(--you); border-radius: 10px; }
+.bubble .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* MODEL: left, full-width prose */
+.model > .label::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  background: var(--model);
+  border-radius: 2px;
+}
+.prose { overflow-wrap: anywhere; }
+.prose > :first-child { margin-top: 2px; }
+.prose > :last-child { margin-bottom: 0; }
+.prose p { margin: 8px 0; white-space: pre-wrap; }
+.prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 { margin: 14px 0 6px; line-height: 1.3; }
+.prose h1 { font-size: 20px; } .prose h2 { font-size: 17px; } .prose h3 { font-size: 15px; }
+.prose h4, .prose h5, .prose h6 { font-size: 14px; }
+.prose ul, .prose ol { margin: 8px 0; padding-left: 24px; }
+.prose code { padding: 1px 4px; background: var(--raised); border-radius: 3px; }
+.prose pre { margin: 8px 0; padding: 10px 12px; background: var(--raised); border-radius: 6px; }
+.prose pre code { padding: 0; background: none; }
+.prose a { color: inherit; }
+
+/* Muted items: thinking, injected text, attachments */
+.muted { font-size: 12px; color: var(--ink-2); }
+.thinking .toggle, .thinking .text { font-style: italic; font-weight: 400; }
+.thinking .text { margin-top: 4px; padding-left: 10px; border-left: 1px dashed var(--line-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.injected, .attachment { display: flex; flex-direction: column; align-items: flex-end; margin-top: 2px; }
+.injected .toggle { font-weight: 400; }
+.injected pre {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--raised);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+/* Tool call and result: one card, one colored rule */
+.card { padding: 2px 0 2px 10px; background: var(--surface); border-left: 3px solid var(--tool); font-family: var(--mono); font-size: 12.5px; }
+.card .line { display: flex; gap: 8px; align-items: baseline; padding: 2px 8px 2px 0; }
+.card .name { flex: none; font-weight: 700; }
+.card .arg { min-width: 0; overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.card .detail { padding: 2px 8px 4px 16px; }
+.card .toggle { font-family: inherit; }
+.card .is-error { font-weight: 700; color: var(--critical); }
+.card .pending { font-style: italic; color: var(--ink-2); }
+.card.plain { border-left-color: var(--line-2); }
+.card .section { margin-top: 2px; font-size: 11px; font-weight: 700; color: var(--ink-2); }
+
+/* Dividers */
+.marker { position: relative; display: flex; justify-content: center; margin: 14px 0; }
+.marker::before { content: ""; position: absolute; top: 50%; left: 0; right: 0; border-top: 1px solid var(--line); }
+.marker > button { position: relative; padding: 0 10px; background: var(--page); color: var(--ink-2); font-size: 11.5px; }
+.marker .meta {
+  display: none;
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.marker:hover .meta, .marker:focus-within .meta, .marker.open .meta { display: block; }
+.rewrite { margin: 22px 0; }
+.rewrite .bar {
+  padding: 4px 8px;
+  background: var(--raised);
+  border-top: 3px double var(--ink-2);
+  border-bottom: 3px double var(--ink-2);
+  font-weight: 700;
+  text-align: center;
+}
+.rewrite .bar button { margin-left: 6px; text-decoration: underline; }
+.rewrite .nested { padding: 8px 12px; border-bottom: 3px double var(--ink-2); }
+.change { font-size: 12px; color: var(--ink-2); text-align: center; }
+.change button { margin-left: 6px; text-decoration: underline; }
+.diff { margin-top: 4px; padding: 8px 10px; background: var(--raised); border-radius: 6px; font-size: 12px; text-align: left; }
+
+/* Banner */
+.banner { padding: 8px 12px; background: var(--critical); color: #ffffff; font-weight: 700; overflow-wrap: anywhere; }
+
+/* Thread header */
+.header { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.header .toggles { display: flex; gap: 8px; color: var(--ink-2); font-size: 12px; }
+.header .toggle { margin: 0; }
+.header .panel { margin-top: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.header .tool-entry { margin: 4px 0; }
+.header .tool-entry pre { margin: 4px 0 8px 14px; font-size: 12px; }
+
+@media (max-width: 700px) {
+  #sidebar { width: 150px; }
+  #log { padding-inline: 12px; }
+  .bubble { max-width: 90%; }
+}
+</style>
+</head>
+<body>
+<nav id="sidebar" aria-label="Threads">
+  <h1>Threads</h1>
+  <div id="threads"></div>
+  <div id="conn" role="status">connecting…</div>
+</nav>
+<main id="main">
+  <div id="pane"><div id="log"><div class="empty">Waiting for traffic. Run the agent with <code>ANTHROPIC_BASE_URL</code> pointing at the proxy.</div></div></div>
+  <button id="jump" hidden></button>
+</main>
+<script>
+'use strict';
+
+// ---- Tunables (SPEC D5, D2a) ------------------------------------------------
+
+const COLLAPSE_OVER = 15;     // a block with more lines than this collapses
+const PREVIEW_LINES = 5;      // lines kept visible when collapsed
+const PREVIEW_CHARS = 2000;   // guards the preview against one enormous line
+const IGNORED_FIELDS = new Set(['cache_control']);  // ignored when comparing, at any depth
+// Per-request attribution text in the system prompt; it says nothing about the
+// conversation, so it must not read as a changed system prompt.
+const VOLATILE_SYSTEM_TEXT = /^x-anthropic-billing-header:/;
+const INJECTED_TAGS = new RegExp(
+  '<(system-reminder|[\\w-]+-hook|local-command-(?:caveat|stdout|stderr)|command-(?:name|message|args)' +
+  '|ide_opened_file|ide_selection|task-notification)>([\\s\\S]*?)</\\1>', 'g');
+const KEY_ARGS = {
+  Bash: 'command', Read: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Write: 'file_path',
+  NotebookEdit: 'notebook_path', Grep: 'pattern', Glob: 'pattern', Agent: 'description', Task: 'description',
+  WebFetch: 'url', WebSearch: 'query',
+};
+const TOOL_BLOCKS = new Set(['tool_use', 'server_tool_use', 'mcp_tool_use']);
+
+// ---- State --------------------------------------------------------------------
+
+const exchanges = new Map();
+const threads = [];
+const interned = new Map();
+const sideView = newView('side');
+const otherView = newView('other');
+
+const dirty = new Set();
+let frameQueued = false;
+let synced = false;
+let sidebarDirty = true;
+let bootId = null;
+let lastSeq = -1;
+let connected = false;
+
+let chosenView = null;    // set once the user clicks a sidebar entry
+let shownView = null;
+let shownCount = 0;
+let following = true;
+let lastScrollTop = 0;
+const unseen = new Set();  // items added or changed since the user left the bottom
+
+const pane = document.getElementById('pane');
+const log = document.getElementById('log');
+const jump = document.getElementById('jump');
+
+function newView(kind) {
+  return { kind, items: [], active: 0, unread: false, count: 0 };
+}
+
+// A throwaway target for items that belong to no sidebar entry.
+function detachedSink() {
+  return { items: [], toolMap: new Map() };
+}
+
+// ---- Small helpers --------------------------------------------------------------
+
+function h(tag, className, ...children) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  el.append(...children.filter(c => c !== null && c !== undefined));
+  return el;
+}
+
+function decodeBase64(b64) {
+  const text = atob(b64);
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i);
+  return out;
+}
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (e) { return undefined; }
+}
+
+function pretty(text) {
+  const value = parseJson(text);
+  return value === undefined ? text : JSON.stringify(value, null, 2);
+}
+
+function clock(ts) {
+  return new Date(ts * 1000).toLocaleTimeString('en-GB');
+}
+
+function firstLine(text) {
+  return text.split('\n').find(line => line.trim()) || '';
+}
+
+function lineCount(text) {
+  const trimmed = text.replace(/\n+$/, '');
+  return trimmed ? trimmed.split('\n').length : 0;
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+function formatNumber(n) {
+  return n === undefined || n === null ? '–' : Number(n).toLocaleString('en-US');
+}
+
+// ---- Comparing messages (SPEC D2a) ------------------------------------------------
+
+function stripIgnored(value) {
+  if (Array.isArray(value)) return value.map(stripIgnored);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      if (!IGNORED_FIELDS.has(key)) out[key] = stripIgnored(value[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function blocksOf(content) {
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  return Array.isArray(content) ? content : [];
+}
+
+function messageId(message) {
+  const key = JSON.stringify(stripIgnored({ role: message.role, content: blocksOf(message.content) }));
+  if (!interned.has(key)) interned.set(key, interned.size);
+  return interned.get(key);
+}
+
+function systemBlocks(system) {
+  return blocksOf(system).filter(b => !VOLATILE_SYSTEM_TEXT.test(b.text || ''));
+}
+
+function systemKey(system) {
+  return JSON.stringify(stripIgnored(systemBlocks(system)));
+}
+
+function toolsKey(tools) {
+  return JSON.stringify(stripIgnored(tools || []));
+}
+
+function systemText(system) {
+  return systemBlocks(system).map(b => b.text || '').join('\n\n');
+}
+
+function isPrefix(prefix, ids) {
+  if (prefix.length > ids.length) return false;
+  return prefix.every((id, i) => id === ids[i]);
+}
+
+function commonPrefixLength(a, b) {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n++;
+  return n;
+}
+
+// The three rules of D2a, in order. Returns { thread, rewritten }.
+function findThread(ids, sysKey, tlsKey) {
+  let best = null;
+  for (const t of threads) {
+    if (!isPrefix(t.history, ids)) continue;
+    const longer = !best || t.history.length > best.history.length;
+    const tieWon = best && t.history.length === best.history.length && t.lastActive >= best.lastActive;
+    if (longer || tieWon) best = t;
+  }
+  if (best) return { thread: best, rewritten: false };
+
+  let recent = null;
+  for (const t of threads) {
+    if (t.sysKey !== sysKey || t.toolsKey !== tlsKey) continue;
+    if (!recent || t.lastActive >= recent.lastActive) recent = t;
+  }
+  return recent ? { thread: recent, rewritten: true } : { thread: null, rewritten: false };
+}
+
+// ---- Routing an exchange ------------------------------------------------------------
+
+function routeExchange(ex) {
+  const body = ex.json;
+  const isObject = body && typeof body === 'object' && !Array.isArray(body);
+  const isMessages = ex.method === 'POST' && ex.pathname === '/v1/messages';
+  if (isMessages && isObject && Array.isArray(body.messages) && body.messages.length) {
+    ex.anthropic = true;
+    ex.meta.model = body.model;
+    if (Array.isArray(body.tools) && body.tools.length) {
+      joinThread(ex, body);
+      return;
+    }
+    addCard(ex, sideView);
+  } else if (ex.method === 'POST' && ex.pathname === '/v1/messages/count_tokens') {
+    addCard(ex, sideView);
+  } else {
+    addCard(ex, otherView);
+  }
+}
+
+function addCard(ex, view) {
+  ex.view = view;
+  ex.sink = detachedSink();
+  view.count++;
+  view.active++;
+  ex.card = pushItem(view, { kind: 'card', ex });
+  sidebarDirty = true;
+}
+
+function joinThread(ex, body) {
+  const ids = body.messages.map(messageId);
+  const sysKey = systemKey(body.system);
+  const tlsKey = toolsKey(body.tools);
+  const found = findThread(ids, sysKey, tlsKey);
+  const isNew = !found.thread;
+  const thread = found.thread || createThread(body, sysKey, tlsKey);
+
+  let newMessages = body.messages.slice(thread.history.length);
+  if (found.rewritten) {
+    // Only the newest message is new; the rest of the replaced history waits behind [show].
+    const hidden = body.messages.slice(0, -1);
+    newMessages = body.messages.slice(-1);
+    pushItem(thread, {
+      kind: 'rewrite',
+      from: thread.history.length,
+      to: ids.length,
+      compacted: ids.length < thread.history.length && commonPrefixLength(thread.history, ids) === 0,
+      messages: hidden,
+      nested: null
+    });
+    thread.replyPending = false;
+  }
+  if (!isNew) noteChanges(thread, body, sysKey, tlsKey);
+
+  for (const message of newMessages) addMessage(thread, message);
+  ex.marker = pushItem(thread, { kind: 'marker', ex });
+
+  thread.history = ids;
+  thread.lastActive = ex.ts;
+  thread.active++;
+  ex.view = thread;
+  ex.sink = thread;
+  sidebarDirty = true;
+}
+
+function createThread(body, sysKey, tlsKey) {
+  const thread = Object.assign(newView('thread'), {
+    index: threads.length,
+    history: [],
+    sysKey,
+    toolsKey: tlsKey,
+    system: body.system,
+    tools: body.tools,
+    toolMap: new Map(),
+    lastActive: 0,
+    replyPending: false,
+  });
+  threads.push(thread);
+  pushItem(thread, { kind: 'header', system: systemText(body.system), tools: body.tools });
+  return thread;
+}
+
+function noteChanges(thread, body, sysKey, tlsKey) {
+  if (sysKey !== thread.sysKey) {
+    pushItem(thread, {
+      kind: 'change', what: 'system prompt changed',
+      before: systemText(thread.system), after: systemText(body.system)
+    });
+  }
+  if (tlsKey !== thread.toolsKey) {
+    pushItem(thread, {
+      kind: 'change', what: 'tools changed',
+      before: JSON.stringify(stripIgnored(thread.tools || []), null, 2),
+      after: JSON.stringify(stripIgnored(body.tools || []), null, 2)
+    });
+  }
+  thread.sysKey = sysKey;
+  thread.toolsKey = tlsKey;
+  thread.system = body.system;
+  thread.tools = body.tools;
+}
+
+// ---- Messages to items (SPEC D1, D3, D3a, D4) ---------------------------------------
+
+function pushItem(target, item) {
+  item.view = target;
+  item.open = {};  // which parts the user has expanded
+  target.items.push(item);
+  touch(item);
+  return item;
+}
+
+function addMessage(target, message) {
+  if (message.role === 'assistant') {
+    let blocks = blocksOf(message.content);
+    // This reply was already rendered as it streamed. Keep only tool calls the
+    // stream never delivered, so that their results still have a card to fill.
+    if (target.replyPending) {
+      blocks = blocks.filter(b => TOOL_BLOCKS.has(b.type) && !target.toolMap.has(b.id));
+      target.replyPending = false;
+    }
+    blocks.forEach(b => addAssistantBlock(target, b));
+    return;
+  }
+  const injected = new Map();
+  const attachments = [];
+  for (const block of blocksOf(message.content)) {
+    if (block.type === 'text') {
+      const typed = splitInjected(block.text || '', injected);
+      if (typed) pushItem(target, { kind: 'you', text: typed });
+    } else if (block.tool_use_id) {
+      fillResult(target, block);
+    } else if (block.type === 'image' || block.type === 'document') {
+      attachments.push(attachmentLabel(block));
+    } else {
+      pushItem(target, { kind: 'block', type: block.type, text: JSON.stringify(block, null, 2) });
+    }
+  }
+  for (const label of attachments) pushItem(target, { kind: 'attachment', label });
+  for (const [tag, texts] of injected) pushItem(target, { kind: 'injected', tag, texts });
+}
+
+// Moves recognized wrappers into `injected`; returns what is left. Text that is
+// not clearly injected stays in the bubble, so nothing typed can be hidden.
+function splitInjected(text, injected) {
+  const typed = text.replace(INJECTED_TAGS, (whole, tag, inner) => {
+    if (!injected.has(tag)) injected.set(tag, []);
+    injected.get(tag).push(inner.trim());
+    return '';
+  });
+  return typed.trim();
+}
+
+function attachmentLabel(block) {
+  const source = block.source || {};
+  const size = typeof source.data === 'string' ? ` · ${Math.round(source.data.length * 0.75 / 1024)} KB` : '';
+  return `${block.type} (${source.media_type || source.type || 'unknown type'}${size})`;
+}
+
+function addAssistantBlock(target, block) {
+  if (TOOL_BLOCKS.has(block.type)) {
+    const tool = pushItem(target, { kind: 'tool', id: block.id, name: block.name, input: block.input, json: null, result: null });
+    target.toolMap.set(block.id, tool);
+    return tool;
+  }
+  if (block.tool_use_id) {
+    fillResult(target, block);
+    return null;
+  }
+  if (block.type === 'text') return pushItem(target, { kind: 'model', text: block.text || '' });
+  if (block.type === 'thinking') return pushItem(target, { kind: 'thinking', text: block.thinking || '' });
+  if (block.type === 'redacted_thinking') return pushItem(target, { kind: 'thinking', redacted: true, text: '' });
+  return pushItem(target, { kind: 'block', type: block.type, text: JSON.stringify(block, null, 2) });
+}
+
+function fillResult(target, block) {
+  const result = { text: resultText(block.content), isError: !!block.is_error };
+  const tool = target.toolMap.get(block.tool_use_id);
+  if (tool) {
+    tool.result = result;
+    touch(tool);
+  } else {
+    pushItem(target, { kind: 'orphan', result });
+  }
+}
+
+function resultText(content) {
+  if (content === undefined || content === null) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return JSON.stringify(content, null, 2);
+  return content.map(part => {
+    if (part.type === 'text') return part.text || '';
+    if (part.type === 'image') return `[${attachmentLabel(part)}]`;
+    return JSON.stringify(part);
+  }).join('\n');
+}
+
+// ---- Reply assembly (SPEC D6) ------------------------------------------------------
+
+function feedStream(ex, text) {
+  ex.streamBuffer += text;
+  let boundary;
+  while ((boundary = /\r?\n\r?\n/.exec(ex.streamBuffer))) {
+    const raw = ex.streamBuffer.slice(0, boundary.index);
+    ex.streamBuffer = ex.streamBuffer.slice(boundary.index + boundary[0].length);
+    const data = raw.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trimStart()).join('\n');
+    const event = data && parseJson(data);
+    if (event) applyStreamEvent(ex, event);
+  }
+}
+
+function applyStreamEvent(ex, event) {
+  switch (event.type) {
+    case 'message_start': {
+      const message = event.message || {};
+      if (message.model) ex.meta.model = message.model;
+      Object.assign(ex.meta.usage, message.usage);
+      break;
+    }
+    case 'content_block_start': {
+      const block = event.content_block || {};
+      markReplyStarted(ex);
+      const item = addAssistantBlock(ex.sink, block);
+      if (item) {
+        item.streaming = true;
+        if (item.kind === 'tool') item.json = '';
+        ex.liveBlocks.set(event.index, item);
+      }
+      break;
+    }
+    case 'content_block_delta':
+      applyDelta(ex.liveBlocks.get(event.index), event.delta || {});
+      break;
+    case 'content_block_stop':
+      finishBlock(ex.liveBlocks.get(event.index));
+      ex.liveBlocks.delete(event.index);
+      break;
+    case 'message_delta':
+      Object.assign(ex.meta.usage, event.usage);
+      if (event.delta && event.delta.stop_reason) ex.meta.stop = event.delta.stop_reason;
+      break;
+    case 'error': {
+      const error = event.error || {};
+      ex.streamError = [error.type, error.message].filter(Boolean).join(' · ') || 'stream error';
+      break;
+    }
+    default:
+      return;
+  }
+  if (ex.marker) touch(ex.marker);
+  if (ex.card) touch(ex.card);
+}
+
+function markReplyStarted(ex) {
+  if (ex.view.kind === 'thread') ex.view.replyPending = true;
+}
+
+function applyDelta(item, delta) {
+  if (!item) return;
+  if (delta.type === 'text_delta') item.text += delta.text || '';
+  else if (delta.type === 'thinking_delta') item.text += delta.thinking || '';
+  else if (delta.type === 'input_json_delta') item.json += delta.partial_json || '';
+  else return;
+  touch(item);
+}
+
+function finishBlock(item) {
+  if (!item) return;
+  item.streaming = false;
+  if (item.kind === 'tool' && item.json !== null) {
+    const parsed = item.json ? parseJson(item.json) : (item.input || {});
+    if (parsed !== undefined) {
+      item.input = parsed;
+      item.json = null;
+    }
+  }
+  touch(item);
+}
+
+function finishExchange(ex) {
+  // A complete non-streaming reply arrives as one JSON body.
+  if (ex.anthropic && isOk(ex) && !ex.streaming) {
+    const reply = parseJson(ex.text);
+    if (reply && reply.type === 'message') {
+      if (reply.model) ex.meta.model = reply.model;
+      Object.assign(ex.meta.usage, reply.usage);
+      ex.meta.stop = reply.stop_reason;
+      markReplyStarted(ex);
+      blocksOf(reply.content).forEach(b => addAssistantBlock(ex.sink, b));
+    }
+  }
+  for (const item of ex.liveBlocks.values()) finishBlock(item);
+  ex.liveBlocks.clear();
+  const problem = errorText(ex);
+  if (problem && ex.view.kind === 'thread') pushItem(ex.view, { kind: 'banner', text: problem });
+}
+
+function isOk(ex) {
+  return ex.status !== null && ex.status >= 200 && ex.status < 300;
+}
+
+function errorText(ex) {
+  if (ex.status === null) return ex.error ? `no response · ${ex.error}` : null;
+  if (!isOk(ex)) {
+    const reply = parseJson(ex.text);
+    const error = reply && reply.error;
+    const detail = error
+      ? [error.type, error.message].filter(Boolean).join(' · ')
+      : [ex.reason, ex.text.trim().slice(0, 300)].filter(Boolean).join(' · ');
+    return `${ex.status} ${detail}`.trim();
+  }
+  if (ex.streamError) return `stream error · ${ex.streamError}`;
+  if (ex.error) return `stream ended early · ${ex.error}`;
+  return null;
+}
+
+// ---- Raw events to exchanges (SPEC D9a) --------------------------------------------
+
+const handlers = {
+  request(event) {
+    const body = event.body ? new TextDecoder().decode(decodeBase64(event.body)) : '';
+    const ex = {
+      id: event.exchange, ts: event.ts, endTs: null,
+      method: event.method, path: event.path, pathname: event.path.split('?')[0],
+      body, prettyBody: null, json: parseJson(body),
+      status: null, reason: '', error: null, streamError: null,
+      decoder: new TextDecoder(), streaming: false, streamBuffer: '', text: '',
+      liveBlocks: new Map(), meta: { usage: {} },
+      anthropic: false, view: null, sink: null, marker: null, card: null,
+    };
+    exchanges.set(ex.id, ex);
+    try {
+      routeExchange(ex);
+    } catch (e) {
+      console.error('could not reconstruct exchange', ex.id, e);
+      ex.anthropic = false;
+      addCard(ex, otherView);
+    }
+  },
+  response(event, ex) {
+    ex.status = event.status;
+    ex.reason = event.reason;
+    const type = (event.headers.find(([k]) => k.toLowerCase() === 'content-type') || [])[1] || '';
+    ex.streaming = ex.anthropic && isOk(ex) && type.includes('text/event-stream');
+    activity(ex);
+  },
+  chunk(event, ex) {
+    const text = ex.decoder.decode(decodeBase64(event.data), { stream: true });
+    if (ex.streaming) feedStream(ex, text);
+    else ex.text += text;
+    if (ex.view.kind === 'thread') ex.view.lastActive = event.ts;
+    activity(ex);
+  },
+  end(event, ex) {
+    ex.endTs = event.ts;
+    if (event.error) ex.error = event.error;
+    ex.text += ex.decoder.decode();
+    finishExchange(ex);
+    ex.view.active--;
+    sidebarDirty = true;
+    activity(ex);
+  },
+};
+
+function activity(ex) {
+  if (ex.marker) touch(ex.marker);
+  if (ex.card) touch(ex.card);
+}
+
+function onRawEvent(event) {
+  if (event.seq <= lastSeq) return;
+  lastSeq = event.seq;
+  const ex = exchanges.get(event.exchange);
+  try {
+    if (event.kind === 'request') handlers.request(event);
+    else if (ex) handlers[event.kind](event, ex);
+  } catch (e) {
+    console.error('could not process event', event.seq, e);
+  }
+}
+
+// ---- Markdown subset (SPEC D11). Builds DOM nodes, so traffic can never become markup.
+
+const INLINE = new RegExp([
+  '`([^`\\n]+)`',
+  '\\*\\*([^\\n]+?)\\*\\*',
+  '(?<![\\w*])\\*([^\\s*][^*\\n]*?)\\*(?![\\w*])',
+  '(?<![\\w_])_([^\\s_][^_\\n]*?)_(?![\\w_])',
+  '\\[([^\\]\\n]+)\\]\\(((?:https?://|mailto:)[^\\s)]+)\\)',
+].join('|'), 'g');
+
+function inline(parent, text) {
+  let at = 0;
+  for (const m of text.matchAll(INLINE)) {
+    parent.append(text.slice(at, m.index));
+    at = m.index + m[0].length;
+    if (m[1] !== undefined) parent.append(h('code', null, m[1]));
+    else if (m[2] !== undefined) inline(parent.appendChild(h('strong')), m[2]);
+    else if (m[3] !== undefined) inline(parent.appendChild(h('em')), m[3]);
+    else if (m[4] !== undefined) inline(parent.appendChild(h('em')), m[4]);
+    else {
+      const link = parent.appendChild(h('a'));
+      link.href = m[6];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      inline(link, m[5]);
+    }
+  }
+  parent.append(text.slice(at));
+  return parent;
+}
+
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const HEADING = /^(#{1,6})\s+(.*)$/;
+const BULLET = /^(\s*)[-*+]\s+(.*)$/;
+const NUMBERED = /^(\s*)(\d+)[.)]\s+(.*)$/;
+
+function startsBlock(line) {
+  return FENCE.test(line) || HEADING.test(line) || BULLET.test(line) || NUMBERED.test(line);
+}
+
+function markdown(text) {
+  const root = h('div', 'prose');
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(FENCE);
+    const heading = line.match(HEADING);
+    if (fence) {
+      const code = [];
+      const close = fence[1];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith(close)) code.push(lines[i++]);
+      i++;
+      root.append(h('pre', null, h('code', null, code.join('\n'))));
+    } else if (heading) {
+      root.append(inline(h(`h${heading[1].length}`), heading[2]));
+      i++;
+    } else if (BULLET.test(line) || NUMBERED.test(line)) {
+      const pattern = BULLET.test(line) ? BULLET : NUMBERED;
+      const list = h(pattern === BULLET ? 'ul' : 'ol');
+      if (pattern === NUMBERED) list.start = Number(line.match(NUMBERED)[2]);
+      while (i < lines.length && pattern.test(lines[i])) {
+        const m = lines[i++].match(pattern);
+        const item = inline(h('li'), m[m.length - 1]);
+        if (m[1].length) item.style.marginLeft = `${m[1].length}ch`;
+        list.append(item);
+      }
+      root.append(list);
+    } else if (!line.trim()) {
+      i++;
+    } else {
+      const paragraph = [];
+      while (i < lines.length && lines[i].trim() && !startsBlock(lines[i])) paragraph.push(lines[i++]);
+      root.append(inline(h('p'), paragraph.join('\n')));
+    }
+  }
+  return root;
+}
+
+// ---- Rendering --------------------------------------------------------------------
+
+function button(text, onClick, className) {
+  const b = h('button', className, text);
+  b.type = 'button';
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function flip(item, key) {
+  item.open[key] = !item.open[key];
+  render(item);  // a click is not news: this does not count toward "N new"
+}
+
+function disclosure(item, key, label) {
+  const open = !!item.open[key];
+  const b = button(`${open ? '▾' : '▸'} ${label}`, () => flip(item, key), 'toggle');
+  b.setAttribute('aria-expanded', String(open));
+  return b;
+}
+
+// SPEC D5: anything over the threshold shows a preview and the hidden line count.
+function collapsible(parent, item, key, text, draw) {
+  const trimmed = text.replace(/\n+$/, '');
+  const lines = trimmed.split('\n');
+  if (lines.length <= COLLAPSE_OVER) {
+    parent.append(draw(trimmed));
+    return;
+  }
+  const open = !!item.open[key];
+  parent.append(draw(open ? trimmed : lines.slice(0, PREVIEW_LINES).join('\n').slice(0, PREVIEW_CHARS)));
+  const label = open ? '▾ collapse' : `▸ ${lines.length - PREVIEW_LINES} more lines`;
+  const toggle = button(label, () => flip(item, key), 'toggle');
+  toggle.setAttribute('aria-expanded', String(open));
+  parent.append(h('div', null, toggle));
+}
+
+const drawPre = text => h('pre', null, text);
+const drawText = text => h('div', 'text', text);
+
+function keyArgument(tool) {
+  const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
+  const named = input[KEY_ARGS[tool.name]];
+  if (typeof named === 'string') return { field: KEY_ARGS[tool.name], value: named };
+  const field = Object.keys(input).find(k => typeof input[k] === 'string');
+  return field ? { field, value: input[field] } : { field: null, value: '' };
+}
+
+function formatInput(input) {
+  if (!input || typeof input !== 'object') return JSON.stringify(input, null, 2);
+  return Object.entries(input)
+    .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}`)
+    .join('\n');
+}
+
+function drawResult(card, item, result) {
+  const lines = lineCount(result.text);
+  const line = h('div', 'line', h('span', 'name', '←'));
+  if (result.isError) line.append(h('span', 'is-error', '✕ error'));
+  if (lines === 0) line.append(h('span', 'arg', '(empty)'));
+  else if (lines === 1) line.append(h('span', 'arg', result.text.trim()));
+  else line.append(h('span', 'arg', result.isError ? `${firstLine(result.text)} · ${lines} lines` : `${lines} lines`));
+  card.append(line);
+  if (lines > 1) {
+    const detail = card.appendChild(h('div', 'detail'));
+    collapsible(detail, item, 'result', result.text, drawPre);
+  }
+}
+
+function drawProse(el, item) {
+  collapsible(el, item, 'text', item.text, markdown);
+  if (item.streaming) {
+    const prose = el.querySelector('.prose');
+    (prose.lastElementChild || prose).append(h('span', 'cursor', '█'));
+  }
+}
+
+const RENDERERS = {
+  you(item, el) {
+    const bubble = el.appendChild(h('div', 'bubble', h('div', 'label', 'YOU')));
+    collapsible(bubble, item, 'text', item.text, drawText);
+  },
+  model(item, el) {
+    el.append(h('div', 'label', 'MODEL'));
+    drawProse(el, item);
+  },
+  thinking(item, el) {
+    el.classList.add('muted');
+    if (item.redacted) {
+      el.append(h('span', 'toggle', 'thinking (redacted)'));
+      return;
+    }
+    const lines = lineCount(item.text);
+    el.append(disclosure(item, 'text', `thinking (${plural(lines, 'line')})${item.streaming ? '…' : ''}`));
+    if (item.open.text) el.append(h('div', 'text', item.text));
+  },
+  injected(item, el) {
+    el.classList.add('muted');
+    el.append(disclosure(item, 'text', `injected: ${item.tag} (${item.texts.length})`));
+    if (item.open.text) item.texts.forEach(text => el.append(h('pre', null, text)));
+  },
+  attachment(item, el) {
+    el.classList.add('muted');
+    el.append(h('span', null, item.label));
+  },
+  tool(item, el) {
+    const card = el.appendChild(h('div', 'card'));
+    const key = keyArgument(item);
+    card.append(h('div', 'line', h('span', 'name', `→ ${item.name}`), h('span', 'arg', firstLine(key.value))));
+    if (item.json !== null) {
+      if (item.json) collapsible(card.appendChild(h('div', 'detail')), item, 'input', item.json, drawPre);
+    } else {
+      const fields = Object.keys(item.input || {});
+      const onlyKeyArg = fields.length === 1 && fields[0] === key.field && !key.value.includes('\n');
+      if (fields.length && !onlyKeyArg) {
+        collapsible(card.appendChild(h('div', 'detail')), item, 'input', formatInput(item.input), drawPre);
+      }
+    }
+    if (item.result) drawResult(card, item, item.result);
+    else card.append(h('div', 'line', h('span', 'name', '←'), h('span', 'pending', 'running…')));
+  },
+  orphan(item, el) {
+    const card = el.appendChild(h('div', 'card'));
+    card.append(h('div', 'line', h('span', 'name', '→'), h('span', 'pending', 'call not shown in this history')));
+    drawResult(card, item, item.result);
+  },
+  block(item, el) {
+    const card = el.appendChild(h('div', 'card plain'));
+    card.append(h('div', 'line', h('span', 'name', item.type || 'block')));
+    collapsible(card.appendChild(h('div', 'detail')), item, 'text', item.text, drawPre);
+  },
+  marker(item, el) {
+    const ex = item.ex;
+    const usage = ex.meta.usage;
+    const bits = [`req #${ex.id}`, clock(ex.ts)];
+    bits.push(ex.endTs === null ? '…' : `${(ex.endTs - ex.ts).toFixed(1)}s`);
+    if (usage.output_tokens !== undefined) bits.push(`${usage.output_tokens} out`);
+    const toggle = button(`─ ${bits.join(' · ')} ─`, () => flip(item, 'meta'));
+    toggle.setAttribute('aria-expanded', String(!!item.open.meta));
+    el.classList.toggle('open', !!item.open.meta);
+    el.append(toggle);
+    const status = ex.status === null ? 'waiting' : `${ex.status} ${ex.reason}`;
+    el.append(h('div', 'meta',
+      h('div', null, `model: ${ex.meta.model || '–'}`),
+      h('div', null, `in ${formatNumber(usage.input_tokens)} · cache read ${formatNumber(usage.cache_read_input_tokens)} · cache write ${formatNumber(usage.cache_creation_input_tokens)}`),
+      h('div', null, `out ${formatNumber(usage.output_tokens)} · stop: ${ex.meta.stop || '–'} · ${status}`)));
+  },
+  rewrite(item, el) {
+    const open = !!item.open.history;
+    const how = item.compacted ? 'compacted: ' : '';
+    const toggle = button(open ? '[hide]' : '[show]', () => flip(item, 'history'));
+    toggle.setAttribute('aria-expanded', String(open));
+    el.append(h('div', 'bar', `══ history rewritten (${how}${item.from} → ${plural(item.to, 'msg')}) `, toggle, ' ══'));
+    if (!open) return;
+    if (!item.nested) {
+      item.nested = detachedSink();
+      item.messages.forEach(m => addMessage(item.nested, m));
+    }
+    const nested = el.appendChild(h('div', 'nested'));
+    if (!item.nested.items.length) nested.append(h('div', 'muted', 'Nothing else: the message below is the whole new history.'));
+    item.nested.items.forEach(child => nested.append(ensureRendered(child)));
+  },
+  change(item, el) {
+    const open = !!item.open.diff;
+    const toggle = button(open ? '[hide diff]' : '[diff]', () => flip(item, 'diff'));
+    toggle.setAttribute('aria-expanded', String(open));
+    el.append(`${item.what} `, toggle);
+    if (open) el.append(h('pre', 'diff', lineDiff(item.before, item.after)));
+  },
+  banner(item, el) {
+    el.setAttribute('role', 'alert');
+    el.append(`⚠ ${item.text}`);
+  },
+  header(item, el) {
+    const toggles = el.appendChild(h('div', 'toggles'));
+    const tools = item.tools || [];
+    toggles.append(disclosure(item, 'system', `System prompt (${plural(lineCount(item.system), 'line')})`), '·',
+      disclosure(item, 'tools', `Tools (${tools.length})`));
+    if (item.open.system) el.append(h('div', 'panel', h('pre', null, item.system || '(none)')));
+    if (item.open.tools) {
+      const panel = el.appendChild(h('div', 'panel'));
+      tools.forEach((tool, i) => {
+        const entry = panel.appendChild(h('div', 'tool-entry'));
+        const key = `tool${i}`;
+        entry.append(disclosure(item, key, tool.name || `tool ${i + 1}`));
+        if (item.open[key]) {
+          const schema = JSON.stringify(tool.input_schema === undefined ? tool : tool.input_schema, null, 2);
+          entry.append(h('pre', null, `${tool.description || ''}\n\n${schema}`.trim()));
+        }
+      });
+    }
+  },
+  card(item, el) {
+    const ex = item.ex;
+    const card = el.appendChild(h('div', 'card plain'));
+    const facts = [`#${ex.id}`, clock(ex.ts)];
+    if (ex.endTs !== null) facts.push(`${(ex.endTs - ex.ts).toFixed(1)}s`);
+    if (ex.meta.model) facts.push(ex.meta.model);
+    card.append(h('div', 'line', h('span', 'name', `${ex.method} ${ex.path}`), h('span', 'arg', facts.join(' · '))));
+    const problem = errorText(ex);
+    if (problem) card.append(h('div', 'banner', `⚠ ${problem}`));
+    card.append(h('div', 'section', '→ request'));
+    if (ex.prettyBody === null) ex.prettyBody = pretty(ex.body);
+    collapsible(card.appendChild(h('div', 'detail')), item, 'request', ex.prettyBody || '(empty body)', drawPre);
+    card.append(h('div', 'section', ex.status === null ? '← waiting…' : `← ${ex.status} ${ex.reason}`));
+    collapsible(card.appendChild(h('div', 'detail')), item, 'response', responseText(ex) || '(empty body)', drawPre);
+  },
+};
+
+function responseText(ex) {
+  const reply = ex.sink.items.map(block => {
+    if (block.kind === 'tool') return `→ ${block.name} ${block.json === null ? JSON.stringify(block.input) : block.json}`;
+    return block.text || '';
+  }).filter(Boolean).join('\n\n');
+  return reply || pretty(ex.text);
+}
+
+// Trims what both sides share and shows the changed middle. Enough to read a
+// changed prompt, and it cannot blow up on two very long texts.
+function lineDiff(before, after) {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+  const rows = [];
+  if (start) rows.push(`  (${plural(start, 'line')} unchanged)`);
+  for (const line of a.slice(start, endA)) rows.push(`- ${line}`);
+  for (const line of b.slice(start, endB)) rows.push(`+ ${line}`);
+  if (a.length - endA) rows.push(`  (${plural(a.length - endA, 'line')} unchanged)`);
+  return rows.join('\n');
+}
+
+function render(item) {
+  if (!item.el) item.el = document.createElement('div');
+  item.el.className = `item ${item.kind}`;
+  item.el.replaceChildren();
+  item.stale = false;
+  try {
+    RENDERERS[item.kind](item, item.el);
+  } catch (e) {
+    // One odd block must not take the rest of the page down with it.
+    console.error('could not render item', item, e);
+    item.el.replaceChildren(h('div', 'muted', `could not render this ${item.kind}: ${e.message}`));
+  }
+  return item.el;
+}
+
+function ensureRendered(item) {
+  return !item.el || item.stale ? render(item) : item.el;
+}
+
+function touch(item) {
+  dirty.add(item);
+  const view = item.view;
+  if (synced && view && view.kind && view !== shownView && !view.unread) {
+    view.unread = true;
+    sidebarDirty = true;
+  }
+  queueFrame();
+}
+
+function queueFrame() {
+  if (!frameQueued && synced) {
+    frameQueued = true;
+    requestAnimationFrame(flush);
+  }
+}
+
+function flush() {
+  frameQueued = false;
+  const target = chosenView || threads[0] || (sideView.count ? sideView : null) || (otherView.count ? otherView : null);
+  if (target !== shownView) showView(target);
+
+  for (const item of dirty) {
+    item.stale = true;
+    if (item.el && item.el.isConnected) render(item);
+    if (!following && item.view === shownView && item.kind !== 'marker') unseen.add(item);
+  }
+  dirty.clear();
+
+  if (shownView) {
+    while (shownCount < shownView.items.length) log.append(ensureRendered(shownView.items[shownCount++]));
+  }
+  if (sidebarDirty) drawSidebar();
+  if (following) scrollToBottom();
+  drawJump();
+}
+
+function showView(view) {
+  shownView = view;
+  shownCount = 0;
+  log.replaceChildren();
+  unseen.clear();
+  following = true;
+  if (view && view.unread) view.unread = false;
+  sidebarDirty = true;
+}
+
+function labelOf(view) {
+  if (view.kind === 'side') return 'side calls';
+  if (view.kind === 'other') return 'other traffic';
+  return view.index === 0 ? 'main' : `subagent ${view.index}`;
+}
+
+function drawSidebar() {
+  sidebarDirty = false;
+  const views = [...threads];
+  if (sideView.count) views.push(sideView);
+  if (otherView.count) views.push(otherView);
+  document.getElementById('threads').replaceChildren(...views.map(view => {
+    const entry = button('', () => {
+      chosenView = view;
+      flush();
+    }, 'entry');
+    entry.setAttribute('aria-current', String(view === shownView));
+    const live = view.active > 0;
+    const status = live ? 'live' : view.unread ? 'unread activity' : '';
+    const title = h('span', null, labelOf(view), view.kind === 'thread' ? null : ` ${view.count}`);
+    const dot = h('span', null, status ? '●' : '');
+    if (status) {
+      dot.title = status;
+      dot.setAttribute('aria-label', status);
+    }
+    entry.append(h('span', 'row', title, dot));
+    if (view.kind === 'thread' && view.index > 0) {
+      const prompt = view.items.find(item => item.kind === 'you');
+      if (prompt) entry.append(h('span', 'snippet', firstLine(prompt.text)));
+    }
+    return entry;
+  }));
+  document.getElementById('conn').textContent = connected ? `live · ${plural(exchanges.size, 'exchange')}` : 'reconnecting…';
+}
+
+// ---- Sticky scroll (SPEC D6) -------------------------------------------------------
+
+function scrollToBottom() {
+  pane.scrollTop = pane.scrollHeight;
+  lastScrollTop = pane.scrollTop;
+}
+
+function drawJump() {
+  jump.hidden = following || unseen.size === 0;
+  jump.textContent = `↓ ${plural(unseen.size, 'new message')}`;
+}
+
+pane.addEventListener('scroll', () => {
+  const top = pane.scrollTop;
+  const gap = pane.scrollHeight - top - pane.clientHeight;
+  if (top < lastScrollTop - 1 && gap > 2) following = false;
+  else if (gap < 30) following = true;
+  if (following) unseen.clear();
+  lastScrollTop = top;
+  drawJump();
+});
+
+jump.addEventListener('click', () => {
+  following = true;
+  unseen.clear();
+  scrollToBottom();
+  drawJump();
+});
+
+// ---- Connection (SPEC D10) ---------------------------------------------------------
+
+function connect() {
+  const source = new EventSource('/events');
+  source.addEventListener('hello', e => {
+    const boot = JSON.parse(e.data).boot;
+    if (bootId && bootId !== boot) location.reload();  // the proxy restarted: start empty
+    bootId = boot;
+    connected = true;
+    sidebarDirty = true;
+    queueFrame();
+  });
+  source.addEventListener('synced', () => {
+    synced = true;
+    queueFrame();
+  });
+  source.onmessage = e => onRawEvent(JSON.parse(e.data));
+  source.onerror = () => {
+    connected = false;
+    sidebarDirty = true;
+    queueFrame();
+    if (source.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
+  };
+}
+
+connect();
+</script>
+</body>
+</html>
