@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Update Tree Demo</title>
+<style>
+  :root { --bg:#fbfaf8; --text:#1f1e1c; --muted:#77736b; --border:#e2ded6; --panel:#f3f1ed;
+          --wt-text:#1f1e1c; --wt-muted:#77736b; --wt-border:#e2ded6; --wt-ok:#2f8a4c; --wt-err:#c0392b; --wt-warn:#b7791f; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#1b1a19; --text:#ecebe8; --muted:#9b968d; --border:#383532; --panel:#232221;
+      --wt-text:#ecebe8; --wt-muted:#9b968d; --wt-border:#383532; --wt-ok:#5cc17f; --wt-err:#ef7563; --wt-warn:#e0b057; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  p { margin: 0; color: var(--muted); font-size: 13px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button, select, label.file { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+          background: var(--bg); color: var(--text); cursor: pointer; }
+  label.file input { display: none; }
+  #status { font-size: 12px; color: var(--muted); }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Working directory &amp; update tree (SPEC D22)</h1>
+  <p>Standalone demo of <code>worktree.js</code>. It reads the monitor's raw events (request / response / chunk / end) and rebuilds the tree.</p>
+  <div class="controls">
+    <button id="replay">Replay sample session (live)</button>
+    <button id="instant">Load sample instantly</button>
+    <label class="file">Load raw events file…<input id="file" type="file" accept=".jsonl,.json,.txt,.sse"></label>
+    <select id="session" title="Session"></select>
+    <span id="status">idle</span>
+  </div>
+</header>
+<main id="panel"></main>
+<script src="worktree.js"></script>
+<script>
+"use strict";
+let tracker, panel, timer = null;
+
+function reset() {
+  clearTimeout(timer);
+  if (panel) panel.destroy();
+  tracker = WorkTree.createTracker();
+  panel = WorkTree.createPanel(document.getElementById("panel"), tracker, {
+    onRaw: (id) => alert(`In the monitor this opens exchange #${id} in the raw panel (D14).`),
+  });
+  tracker.onChange(fillSessions);
+  fillSessions();
+}
+
+function fillSessions() {
+  const sel = document.getElementById("session");
+  const list = tracker.sessions();
+  const cur = sel.value;
+  sel.replaceChildren(...list.map((s) => {
+    const o = document.createElement("option");
+    o.value = s.id;
+    o.textContent = `${(s.cwd || "?").split("/").pop()} · ${s.id.slice(0, 8)}`;
+    return o;
+  }));
+  if (list.some((s) => s.id === cur)) sel.value = cur;
+}
+document.getElementById("session").addEventListener("change", (e) => panel.setSession(e.target.value));
+
+// ------------------------------------------------------------ sample traffic (synthetic, same shape as real Claude Code)
+const b64 = (s) => { const u = new TextEncoder().encode(s); let bin = ""; for (const c of u) bin += String.fromCharCode(c); return btoa(bin); };
+
+function sampleEvents() {
+  const evs = [];
+  let seq = 0, exch = 0, t = Date.now() / 1000 - 600;
+  const env = (cwd, update, was) => ({ role: "system", content: [{ type: "text", text:
+    update ? `# Environment update\n - Primary working directory: ${cwd} (was ${was})`
+           : `# Environment\nYou have been invoked in the following environment:\n - Primary working directory: ${cwd}\n - Platform: linux` }] });
+  const reminder = { type: "text", text: "<system-reminder>\nContext the user did not type.\n</system-reminder>" };
+  function exchange(sid, messages, toolUses, text) {
+    const id = ++exch;
+    t += 20;
+    const body = JSON.stringify({ model: "claude-opus-5-5", stream: true, tools: [{ name: "Edit" }],
+      metadata: { user_id: JSON.stringify({ device_id: "demo", session_id: sid }) }, system: [{ type: "text", text: "You are Claude Code." }], messages });
+    evs.push({ seq: seq++, kind: "request", exchange: id, ts: t, method: "POST", path: "/v1/messages?beta=true", headers: [["content-type", "application/json"]], body: b64(body) });
+    evs.push({ seq: seq++, kind: "response", exchange: id, ts: t + 0.4, status: 200, reason: "OK", headers: [["content-type", "text/event-stream"]] });
+    const sse = [];
+    const ev = (o) => sse.push(`event: ${o.type}\ndata: ${JSON.stringify(o)}\n\n`);
+    ev({ type: "message_start", message: { id: "msg_" + id, role: "assistant", content: [], usage: { input_tokens: 10, output_tokens: 1 } } });
+    let idx = 0;
+    if (text) { ev({ type: "content_block_start", index: idx, content_block: { type: "text", text: "" } }); ev({ type: "content_block_delta", index: idx, delta: { type: "text_delta", text } }); ev({ type: "content_block_stop", index: idx }); idx++; }
+    for (const tu of toolUses) {
+      ev({ type: "content_block_start", index: idx, content_block: { type: "tool_use", id: tu.id, name: tu.name, input: {} } });
+      const j = JSON.stringify(tu.input);
+      ev({ type: "content_block_delta", index: idx, delta: { type: "input_json_delta", partial_json: j.slice(0, 15) } });
+      ev({ type: "content_block_delta", index: idx, delta: { type: "input_json_delta", partial_json: j.slice(15) } });
+      ev({ type: "content_block_stop", index: idx });
+      idx++;
+    }
+    ev({ type: "message_delta", delta: { stop_reason: toolUses.length ? "tool_use" : "end_turn" }, usage: { output_tokens: 50 } });
+    ev({ type: "message_stop" });
+    const whole = sse.join("");
+    const cut = Math.floor(whole.length / 2);
+    evs.push({ seq: seq++, kind: "chunk", exchange: id, ts: t + 0.6, data: b64(whole.slice(0, cut)) });
+    evs.push({ seq: seq++, kind: "chunk", exchange: id, ts: t + 0.9, data: b64(whole.slice(cut)) });
+    evs.push({ seq: seq++, kind: "end", exchange: id, ts: t + 1.0 });
+    return toolUses.map((tu) => ({ type: "tool_use", id: tu.id, name: tu.name, input: tu.input }));
+  }
+  const result = (id, content, is_error) => ({ type: "tool_result", tool_use_id: id, content, ...(is_error ? { is_error: true } : {}) });
+
+  // Session A: older, in another project
+  const A = "aaaaaaaa-0000-4000-8000-000000000001";
+  let ha = [{ role: "user", content: [reminder, { type: "text", text: "add a README" }] }, env("/home/dev/blog")];
+  const a1 = exchange(A, ha, [{ id: "toolu_a1", name: "Write", input: { file_path: "/home/dev/blog/README.md", content: "# Blog\n\nStatic site.\n" } }], "Adding a README.");
+  ha = ha.concat([{ role: "assistant", content: a1 }, { role: "user", content: [result("toolu_a1", "File created successfully at: /home/dev/blog/README.md")] }]);
+  exchange(A, ha, [], "Done.");
+
+  // Session B: the current one
+  const B = "bbbbbbbb-0000-4000-8000-000000000002";
+  const cwd = "/home/dev/lab4", cwd2 = "/home/dev/lab4/monitor";
+  let h = [{ role: "user", content: [reminder, { type: "text", text: "Start the monitor: create monitor.py and a hooks/forward.py, and update the spec" }] }, env(cwd)];
+  const s1 = exchange(B, h, [
+    { id: "toolu_r1", name: "Read", input: { file_path: cwd + "/SPEC.md" } },
+    { id: "toolu_w1", name: "Write", input: { file_path: cwd + "/monitor.py", content: "import http.server\n\nPORT = 8040\n\ndef main():\n    pass\n" } },
+    { id: "toolu_w2", name: "Write", input: { file_path: cwd + "/hooks/forward.py", content: "import sys, urllib.request\n\nsys.exit(0)\n" } },
+  ], "I'll read the spec and create both files.");
+  h = h.concat([{ role: "assistant", content: s1 }, { role: "user", content: [
+    result("toolu_r1", "1\t# SPEC\n2\t..."),
+    result("toolu_w1", "File created successfully at: " + cwd + "/monitor.py"),
+    result("toolu_w2", "File created successfully at: " + cwd + "/hooks/forward.py")] }]);
+  const s2 = exchange(B, h, [
+    { id: "toolu_e1", name: "Edit", input: { file_path: cwd + "/SPEC.md", old_string: "## 4. Open decisions\n", new_string: "### D22. Working directory and update tree\n\n- Tracks cwd and file updates.\n\n## 4. Open decisions\n" } },
+    { id: "toolu_e2", name: "Edit", input: { file_path: cwd + "/monitor.py", old_string: "def main():\n    pass\n", new_string: "def main():\n    server = http.server.ThreadingHTTPServer((\"127.0.0.1\", PORT), Handler)\n    server.serve_forever()\n" } },
+  ], "Updating the spec and the server loop.");
+  h = h.concat([{ role: "assistant", content: s2 }, { role: "user", content: [
+    result("toolu_e1", "The file " + cwd + "/SPEC.md has been updated successfully."),
+    result("toolu_e2", "The file " + cwd + "/monitor.py has been updated successfully.")] }]);
+  const s3 = exchange(B, h, [{ id: "toolu_b1", name: "Bash", input: { command: "python3 -m py_compile monitor.py", description: "Check syntax" } }], "Checking syntax.");
+  h = h.concat([{ role: "assistant", content: s3 }, { role: "user", content: [result("toolu_b1", "")] },
+    { role: "user", content: [{ type: "text", text: "also add a .gitignore, and don't touch proxy.py" }] }]);
+  const s4 = exchange(B, h, [
+    { id: "toolu_w3", name: "Write", input: { file_path: cwd + "/.gitignore", content: "data/\n__pycache__/\n" } },
+    { id: "toolu_e3", name: "Edit", input: { file_path: cwd + "/proxy.py", old_string: "PORT = 8041", new_string: "PORT = 8040" } },
+  ], "Adding .gitignore.");
+  h = h.concat([{ role: "assistant", content: s4 }, { role: "user", content: [
+    result("toolu_w3", "File created successfully at: " + cwd + "/.gitignore"),
+    result("toolu_e3", "The user doesn't want to proceed with this tool use. The tool use was rejected.", true)] },
+    env(cwd2, true, cwd)]);
+  const s5 = exchange(B, h, [
+    { id: "toolu_e4", name: "Edit", input: { file_path: cwd + "/monitor.py", old_string: "PORT = 9999", new_string: "PORT = 8040" } },
+    { id: "toolu_w4", name: "Write", input: { file_path: "/tmp/monitor-notes.txt", content: "scratch notes\n" } },
+    { id: "toolu_e5", name: "Edit", input: { file_path: "README.md", old_string: "", new_string: "# Monitor\n\nRun python3 monitor.py\n" } },
+  ], "Fixing the port and noting things down.");
+  h = h.concat([{ role: "assistant", content: s5 }, { role: "user", content: [
+    result("toolu_e4", "<tool_use_error>String to replace not found in file.</tool_use_error>", true),
+    result("toolu_w4", "File created successfully at: /tmp/monitor-notes.txt"),
+    result("toolu_e5", "The file " + cwd2 + "/README.md has been updated successfully.")] }]);
+  exchange(B, h, [{ id: "toolu_w5", name: "Write", input: { file_path: cwd + "/monitor.py", content: "import http.server\n\nPORT = 8040\n\ndef main():\n    serve()\n" } }], "Rewriting monitor.py.");
+  return evs;
+}
+
+function play(evs, live) {
+  reset();
+  const status = document.getElementById("status");
+  if (!live) { evs.forEach((e) => tracker.feed(e)); status.textContent = `loaded ${evs.length} events`; return; }
+  let i = 0;
+  const step = () => {
+    if (i >= evs.length) { status.textContent = `replayed ${evs.length} events`; return; }
+    tracker.feed(evs[i++]);
+    status.textContent = `replaying… ${i}/${evs.length}`;
+    timer = setTimeout(step, 120);
+  };
+  step();
+}
+document.getElementById("replay").onclick = () => play(sampleEvents(), true);
+document.getElementById("instant").onclick = () => play(sampleEvents(), false);
+document.getElementById("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const evs = [];
+  for (let line of (await f.text()).split("\n")) {
+    line = line.trim();
+    if (line.startsWith("data:")) line = line.slice(5).trim();   // an /events SSE dump
+    if (!line.startsWith("{")) continue;
+    try { const ev = JSON.parse(line); if (ev && ev.kind) evs.push(ev); } catch (err) { /* skip */ }
+  }
+  play(evs, false);
+  document.getElementById("status").textContent = `loaded ${evs.length} raw events from ${f.name}`;
+};
+reset();
+play(sampleEvents(), false);
+</script>
+</body>
+</html>
