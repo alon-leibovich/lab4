@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Viewer</title>
+  <link rel="stylesheet" href="/_viewer/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="side-head">
+        <div class="brand">Session Viewer</div>
+        <input id="search" type="search" placeholder="Search prompts…" autocomplete="off">
+      </div>
+      <ul id="sessions"></ul>
+    </aside>
+
+    <main id="main">
+      <header id="statusbar">
+        <button id="toggle-side" class="icon-btn" title="Sessions">☰</button>
+        <div class="status-text">
+          <span id="s-title" class="s-title">No session selected</span>
+          <span id="s-cwd" class="muted"></span>
+        </div>
+        <span id="s-live" class="live-badge" hidden>● live</span>
+        <span id="s-mode" class="mode-badge" hidden></span>
+      </header>
+      <nav id="tabs">
+        <button class="tab active" data-tab="timeline">Timeline</button>
+        <button class="tab" data-tab="permissions">Permissions</button>
+        <span class="spacer"></span>
+        <button id="open-raw" class="raw-btn">Raw ▸</button>
+      </nav>
+      <section id="scroller">
+        <div id="timeline" class="timeline"></div>
+        <div id="permissions" hidden></div>
+        <div id="empty" class="empty" hidden></div>
+      </section>
+      <button id="new-pill" hidden>↓ <span>0</span> new</button>
+    </main>
+
+    <aside id="raw" aria-hidden="true">
+      <div class="raw-head">
+        <div class="raw-tabs">
+          <button class="rtab active" data-scope="session">This session</button>
+          <button class="rtab" data-scope="unattributed">Unattributed</button>
+        </div>
+        <button id="close-raw" class="icon-btn" title="Close">✕</button>
+      </div>
+      <div class="raw-body">
+        <ul id="raw-list"></ul>
+        <div id="raw-detail"></div>
+      </div>
+    </aside>
+  </div>
+  <script src="/_viewer/static/md.js"></script>
+  <script src="/_viewer/static/app.js"></script>
+</body>
+</html>
