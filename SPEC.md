@@ -1,22 +1,45 @@
 # SPEC: Live traffic dashboard for proxy.py
 
-Status: **draft**. Section 3 lists what has been decided (D1–D12). Section 4
-lists what is still open. Nothing has been implemented.
+Status: **draft, revision 3.** Merges our first spec with the ideas from our
+partner's draft ("Session Viewer"). Python standard library only, nothing to
+install. **`proxy.py` stays exactly as provided by the course, unmodified**;
+the dashboard is a separate program (D9).
+Section 3 lists decisions, section 4 what is still open, section 5 the
+acceptance checks. Section 6 records what changed since the last build.
 
-## 1. Goal
+## 1. Goal and guiding principle
 
 While `proxy.py` is running, I open a page in the browser. It updates live and
-shows the messages between the agent and the model, formatted to be easy to read.
+shows the conversation between Claude Code and the model: every prompt, every
+reply, every tool call and every tool result. Sessions, permissions and the
+raw API traffic are also available, but they are visually secondary.
 
-**Readability is the main requirement.** Messages pile up fast. At a glance I
-must be able to tell apart:
+**Readability first.** The main view is a cleaned-up, human-friendly rendering
+of the conversation, *not* a dump of the data as sent. At a glance I must be
+able to tell apart:
 
-- my prompt (user text),
+- my prompt (what I typed),
 - the model's reply (assistant text),
 - a tool call (`tool_use`),
 - that tool's result (`tool_result`),
 
 and follow the conversation as it grows.
+
+**Fidelity is never lost.** Everything the main view hides or shortens stays
+reachable: every item can be expanded to its full content, and every item has
+a `raw` link to the exact exchange it came from (D14). When readability and
+faithfulness conflict, the main view chooses readability and the raw view
+keeps the fidelity.
+
+### 1.1 Build priority
+
+Each build implements **Tier 1 first**, makes it work, and only then Tier 2.
+A build that runs out of time should deliver a working Tier 1, not a broken
+Tier 1 + 2.
+
+- **Tier 1 (core):** D1–D12, D14, D15, D16.
+- **Tier 2 (extended):** D17 (sessions and persistence), D18 (permissions),
+  D19 (optional hooks).
 
 ## 2. Context: what the proxy sees today
 
@@ -36,15 +59,19 @@ Facts the design must account for:
    example title or summary generation on a small model, token counting,
    subagents with their own histories), and `ThreadingHTTPServer` means
    requests can overlap.
-4. **Content kinds beyond the four above** appear in the stream: `thinking`
-   blocks, a long system prompt, a large `tools` list, and system reminders
-   injected into user messages.
+4. **Content kinds beyond the four above** appear: `thinking` blocks (possibly
+   empty or redacted), a long system prompt, a large `tools` list, system
+   reminders and environment context injected into user messages, and block
+   types the dashboard may not know (the last build saw `tool_addition`).
 5. **Secrets pass through.** `authorization` / `x-api-key` headers are
    currently truncated when printed.
 6. **Other upstreams.** `--upstream` can point at Codex, which uses a
    different API format.
-7. The proxy must keep forwarding **byte for byte, unchanged**. The dashboard
+7. Traffic must keep flowing **byte for byte, unchanged**. The dashboard
    only observes.
+8. **`proxy.py` is not modified in any way.** No line of it is added, removed
+   or changed, and the dashboard does not import it or depend on how it
+   prints. It runs exactly as before: `python3 proxy.py --port 8041`.
 
 ## 3. Decisions
 
@@ -62,17 +89,17 @@ Facts the design must account for:
 [YOU]    fix the failing test
 ─ req #12 · 14:02:07 · 1.8s ─
 [MODEL]  Let me look at it.
-[TOOL →] Bash: pytest -x
+▸ Bash · Run the tests  ✓
 ─ req #13 · 14:02:10 ─
-[← RES]  1 failed: test_parse
+[MODEL]  The bug is in parse()…
 ```
 
 ### D1a. Rewritten history: divider, same thread
 
 - If a request's `messages` is not the previous request's history plus new
   messages (context compaction, rewind, edited earlier message), the thread
-  **continues** (detected by D2a's rule 2), and a prominent divider is inserted that is visually distinct
-  from an exchange marker:
+  **continues** (detected by D2a's rule 2), and a prominent divider is
+  inserted that is visually distinct from an exchange marker:
   `══ history rewritten (compacted: 84 → 3 msgs) [show] ══`
 - The previous history stays above the divider. `[show]` reveals what the new
   request's history looks like in its place (e.g. the compaction summary)
@@ -81,27 +108,29 @@ Facts the design must account for:
 ```
 [MODEL]  Done with step 3.
 ══ history rewritten (compacted: 84 → 3 msgs) [show] ══
-[YOU]    <summary of earlier work…>
 [MODEL]  Continuing with step 4.
 ```
 
-### D2. Side traffic and multiple conversations: sidebar of threads
+### D2. Threads: sidebar, with subagents also nested under their call
 
-- A **left sidebar lists threads**: the main conversation, each subagent as
-  its own thread, and side calls (title/summary generation, token counting,
-  etc.) grouped under one "side calls" entry with a count.
+- A **left sidebar lists threads** of the selected session (D17): the main
+  conversation, each subagent as its own thread, and side calls
+  (title/summary generation, token counting, etc.) grouped under one
+  "side calls" entry with a count.
 - The **main thread is selected by default**. Clicking an entry switches the
   main pane to that thread.
-- Threads with **live or unread activity** show an indicator (e.g. `●`), so
-  activity elsewhere is visible without leaving the current thread.
+- Threads with **live or unread activity** show an indicator (e.g. `●`).
+- **Subagents are also reachable from the main thread:** the `Agent` tool card
+  (D4) expands into a nested, indented mini-timeline of that subagent's
+  thread, and has an `open thread` link that selects it in the sidebar.
 
 ```
-┌ threads ──────┐┌ main ─────────────────────
+┌ threads ──────┐┌ main ─────────────────────────────
 │● main         ││[YOU]    fix the test
-│  subagent 1 ● ││[MODEL]  Spawning explorer…
-│  subagent 2   ││[TOOL →] Agent: find parse()
-│  side calls 7 ││
-└───────────────┘└───────────────────────────
+│  subagent 1 ● ││▸ Agent · Find parse()  running…
+│  side calls 7 ││    ↳ subagent 1 (12 items) [open thread]
+│  other 1      ││
+└───────────────┘└───────────────────────────────────
 ```
 
 ### D2a. Thread assignment: match the start of the message history
@@ -113,23 +142,19 @@ applies:
    (the `messages` of its most recent request) is a prefix of the new
    request's `messages`. What follows the prefix is the new content that D1
    appends. If **several threads match, the longest match wins**.
-2. **Rewrite fallback (resolves D1b).** If no thread matches by prefix, the
-   request joins the **most recently active thread with the same system
-   prompt and the same tools list**. A "history rewritten" divider (D1a) is
-   inserted at that point.
+2. **Rewrite fallback.** If no thread matches by prefix, the request joins the
+   **most recently active thread with the same system prompt and the same
+   tools list**. A "history rewritten" divider (D1a) is inserted.
 3. **New thread.** Otherwise the request starts a new thread.
 
-**What "matching" means (resolves D2b).** Messages are compared on **`role`
-and `content` only**. `cache_control` and similar annotation fields, which
-change from turn to turn without changing what a message says, are ignored,
-including inside content blocks. Claude Code moves `cache_control` markers
-onto the newest messages each turn, so an exact comparison would rarely match.
-
-"Same system prompt and tools list" in rule 2 is compared the same way,
-ignoring `cache_control` and similar fields.
+**What "matching" means.** Messages are compared on **`role` and `content`
+only**. `cache_control` and similar annotation fields, which change from turn
+to turn without changing what a message says, are ignored, including inside
+content blocks. "Same system prompt and tools list" is compared the same way.
 
 "Most recently active" means the thread whose latest exchange started or
-received data most recently.
+received data most recently. Matching only considers threads of the same
+session (D17).
 
 ```
 thread A (sys S, tools T) history:  [u1, a1, u2]
@@ -143,105 +168,135 @@ new [u9], sys S2                    → no match → new thread
 
 ### D3. Visual language: chat layout + color, never color alone
 
-- **My prompt** (user text): right-aligned bubble, labelled `YOU`.
+- **My prompt** (typed user text): right-aligned bubble, labelled `YOU`, in
+  large readable text.
 - **Model reply** (assistant text): left, full-width prose, labelled `MODEL`,
-  Markdown rendered (headings, lists, code blocks).
-- **Tool call** (`tool_use`): compact monospace card with a colored left rule,
-  labelled `→ <tool name>`, with the key argument shown first (e.g. the
-  command for Bash, the path for Read/Edit).
-- **Tool result** (`tool_result`): same card style and **same hue as its
-  call**, labelled `←`, with error results (`is_error`) clearly marked.
+  Markdown rendered (headings, lists, tables, code blocks).
+- **Tool call + result:** one compact card per call (D4), with a colored left
+  rule. A call and its result share the card and the hue.
 - Every kind has a **text label or icon as well as color**, so the
   distinction survives color blindness and grayscale.
-- Note: on the wire, `tool_result` blocks travel in `role: "user"` messages.
-  They must **never** be rendered as `YOU`. Only user `text` blocks are "my
-  prompt".
+- On the wire, `tool_result` blocks travel in `role: "user"` messages. They
+  must **never** be rendered as `YOU`.
 
-```
-                 ┌───────────────────┐
-                 │ YOU  fix the test │
-                 └───────────────────┘
-MODEL  Let me look at it.
-┃ → Bash  pytest -x
-┃ ← exit 1 · 1 failed: test_parse
-MODEL  The bug is in parse()…
-```
+### D3a. Injected text: never in my bubble
 
-### D3a. Injected text, thinking, errors: muted and collapsed
+My `YOU` bubble contains **only what I typed**. Everything else that arrives
+in a user message is injected context and is moved out of the bubble into a
+small grey chip, collapsed by default: `▸ injected: <kind> (n)`. Expanding the
+chip shows the full injected text.
 
-- **Injected text** (system reminders, hook output, attached file context:
-  anything in a user message that I did not type) is **split out of my
-  bubble** into a small grey `▸ injected: <kind> (n)` chip, collapsed by
-  default. My `YOU` bubble contains only what I typed.
-- **Thinking** blocks: a dim, italic, collapsed `▸ thinking (14 lines)`
-  block placed before the reply it belongs to.
-- **API errors / non-200 responses**: a red full-width banner with status and
-  message (e.g. `529 overloaded`).
-- All three keep a text label (D3's "never color alone" rule).
+**Detection rule (closes the old D3b).** A user message is split into its text
+blocks, and each block is classified:
+
+1. A block is **injected** if any of these holds:
+   - it is wrapped in, or consists only of, XML-like tags that Claude Code
+     adds, such as `<system-reminder>`, `<command-name>`, `<command-message>`,
+     `<command-args>`, `<local-command-stdout>`, `<user-prompt-submit-hook>`;
+   - it starts with an environment/context header, such as `# Environment`,
+     `You have been invoked in the following environment`, or
+     `Caveat: The messages below were generated`;
+   - it is the content of an attached file or memory file that Claude Code
+     added (e.g. contents of `CLAUDE.md`).
+   Tags embedded **inside** a typed block are cut out of it the same way, and
+   the remaining text stays in the bubble.
+2. Every other text block is **typed** and goes in the bubble.
+3. The chip's `<kind>` is the tag name or the header (`system-reminder`,
+   `environment`, `command`, `file`, …). Unrecognized injected text uses
+   `context`.
+4. If a user message turns out to have **no typed text at all**, no empty
+   `YOU` bubble is drawn, only the chip.
+
+The patterns live in **one list in one place** in the code, so a new kind of
+injected text is a one-line change.
 
 ```
                  ┌─────────────────────┐
                  │ YOU  fix the test   │
                  └─────────────────────┘
-                 ▸ injected: system-reminder (2)
-▸ thinking (14 lines)
-MODEL  Let me look at it.
-██ 529 overloaded · retrying ██
+                 ▸ injected: system-reminder (2) · environment (1)
 ```
 
-### D4. Tool results attach under their call
+### D3b. Thinking, unknown blocks, errors
 
-- Each `tool_use` gets its own card. Its `tool_result` (matched by
-  `tool_use_id`) **fills into that card** when it arrives, even though on the
-  wire it comes in the next request.
-- Until the result arrives, the card shows `running…`.
+- **Thinking** blocks with text: a dim, italic, collapsed
+  `▸ thinking (14 lines)` block before the reply it belongs to.
+  **Empty thinking blocks are not shown at all.** Redacted thinking shows as
+  a single `▸ thinking (redacted)` chip.
+- **`tool_addition` blocks** (tools added mid-conversation) are not shown as
+  cards. They update the thread's Tools header (D7) and add a thin divider:
+  `─ tools added: Foo, Bar ─`, expandable to the definitions.
+- **Any other unknown block type** is shown as a single collapsed grey chip
+  `▸ <type>` that expands to its pretty-printed JSON. Unknown blocks never
+  appear expanded in the main view.
+- **API errors / non-200 responses**: a red full-width banner with status and
+  message (e.g. `529 overloaded`).
+- All of these keep a text label (D3's "never color alone" rule).
+
+### D4. Tool calls: one-line card, full detail one click away
+
+Each `tool_use` gets **one card**. Its `tool_result` (matched by
+`tool_use_id`) **fills into that card** when it arrives, even though on the
+wire it comes in the next request.
+
+**Collapsed (default), one line:**
+`▸ <tool name> · <summary>  <status>`
+
+- `<summary>` is the call's `description` field when present (Bash has one).
+  Otherwise a short summary of the key input: the path for Read/Edit/Write,
+  the pattern for Grep/Glob, the task for Agent, else the first input value.
+- `<status>` is `running…` → `✓` / `✗ error` / `denied` (D18).
+- The command or input appears **once** in the card. The one-line summary
+  never repeats what the expanded part shows twice.
+
+**Expanded (click the card):**
+- the **full input, untruncated**: the full command for Bash, otherwise every
+  input field pretty-printed as JSON;
+- the **full result**: if it is longer than the D5 threshold it shows the
+  first lines plus `▸ show all (N lines)`, and `show all` reveals every line
+  of it, untruncated;
+- a `copy` button for the input and one for the result;
+- the item's `raw` link (D14), which opens the exact `tool_use` and
+  `tool_result` JSON as sent on the wire.
+
+So any tool call can always be read **in full**, not only as a summary.
+
+- **Errors** (`is_error`) are tinted red and **auto-expanded**.
 - Parallel calls are separate cards in the order the model issued them, each
   filled independently.
-- Interaction with D1: the result appears inside the call's card, *above* the
-  exchange marker of the request that carried it. That request's marker
-  therefore starts with the model's next reply.
+- The result appears inside the call's card, *above* the exchange marker of
+  the request that carried it.
 
 ```
 MODEL  Checking both files.
-┃ → Read  src/util.py
-┃ ← 120 lines  [expand]
-┃ → Read  tests/test_util.py
-┃ ← running…
+▸ Read · src/util.py  ✓
+▾ Bash · Run the tests  ✗ error
+    command:  pytest -x tests/
+    result:   1 failed: test_parse
+              ...
+              ▸ show all (48 lines)          [copy] [raw]
+▸ Read · tests/test_util.py  running…
 ```
 
 ### D5. Long content: any block over ~15 lines collapses
 
-- **Every block kind** (my prompts, model prose, tool inputs, tool results)
+- **Every block kind** (my prompts, model prose, tool results, injected text)
   collapses when it is longer than **about 15 lines**.
 - A collapsed block shows **the first few lines as a preview** plus the
-  **number of hidden lines** as the expander: `▸ 117 more lines`.
-- A tool card that collapses also keeps its one-line summary (tool name, key
-  argument, result size or exit status), so the pair is still readable when
-  folded.
-
-```
-┃ ← 132 lines
-┃   1  import re
-┃   2  def parse(s):
-┃   3      ...
-┃   ▸ 129 more lines
-```
+  **number of hidden lines** as the expander: `▸ show all (117 more lines)`.
+- Expanding always shows the complete content.
 
 ### D6. Live streaming: token-by-token, sticky scroll
 
-- Reply text **grows live** as `content_block_delta` events arrive. Tool-call
-  arguments (`input_json_delta`) also stream into their card.
+- Before the first token of a reply arrives, a single `MODEL is responding…`
+  row is shown. Then the reply text **grows live** as `content_block_delta`
+  events arrive. Tool-call arguments (`input_json_delta`) stream into their
+  card's expanded view.
 - **Sticky auto-scroll**: the page follows new content only while I am at
   the bottom. If I scroll up to read, it stops following and shows a
-  `↓ N new messages` button that jumps back down and resumes following.
+  `↓ N new` pill that jumps back down and resumes following.
 - A block that grows past the D5 threshold while streaming collapses under
   the same rule.
-
-```
-MODEL  The bug is in parse(): it█
-
-            [ ↓ 3 new messages ]
-```
 
 ### D7. System prompt and tools: thread header, on demand
 
@@ -250,16 +305,8 @@ MODEL  The bug is in parse(): it█
   system prompt, or the list of tools (each tool's description and schema
   expandable in turn).
 - They are never repeated per request. If either one **changes mid-thread**,
-  a small divider notes it (`system prompt changed` / `tools changed`) with a
-  diff on demand.
-
-```
-┌ main ───────────────────────────────────
-│ ▸ System prompt (412 lines) · ▸ Tools (23)
-├─────────────────────────────────────────
-│                  [YOU  fix the test]
-│ MODEL  Let me look at it.
-```
+  a small divider notes it (`system prompt changed` / `tools changed` /
+  `tools added: …`) with a diff on demand.
 
 ### D8. Metadata: minimal in the marker, the rest on hover
 
@@ -267,186 +314,300 @@ MODEL  The bug is in parse(): it█
   output tokens**: `─ req #13 · 14:02:10 · 1.8s · 240 out ─`.
 - **Hovering or clicking** the marker reveals model, input tokens, cache
   read / cache write tokens, output tokens, stop reason and HTTP status.
-- No running totals for now. They were not chosen and may be added later.
+
+### D9. Architecture: a separate monitor in front of the unchanged proxy.py
+
+- `proxy.py` is **left exactly as it is** (section 2, fact 8). The dashboard
+  is a **new, separate program, `monitor.py`**, plus the page it serves.
+- `monitor.py` sits **in front of** `proxy.py` in the chain. It listens on
+  `127.0.0.1:8040`, records each exchange, and forwards it unchanged to
+  `proxy.py` on `127.0.0.1:8041`, which forwards it to the API as before:
 
 ```
-─ req #13 · 14:02:10 · 1.8s · 240 out ─
-   (hover) model: claude-opus-5-5
-           in 12,034 · cache read 11,800
-           out 240 · stop: tool_use · 200 OK
+Claude Code → monitor.py :8040 → proxy.py :8041 → api.anthropic.com
+                   │
+                   └─ records → dashboard page :8042 (SSE) → browser
 ```
 
-### D9. Architecture: inside proxy.py, separate port, SSE
-
-- The dashboard is **served by proxy.py itself**, so there is one command to
-  run. It uses a **separate local port** (default `8042`, next to the proxy's
-  `8041`), so no dashboard path ever overlaps the traffic forwarded to the API.
-- The page receives live updates over **Server-Sent Events** (plain HTTP,
-  doable with the stdlib).
-- Startup prints both URLs:
-
-```
-python3 proxy.py
-  proxy      http://localhost:8041 -> api.anthropic.com
-  dashboard  http://localhost:8042
-
-agent → :8041 → upstream
-           ↓ events
-browser ← :8042 (SSE)
-```
-
-- **Constraint:** observing must never affect forwarding. Bytes are still
-  relayed unchanged and as they arrive. A slow or disconnected browser, or a
-  parsing failure in the dashboard code, must not delay, alter or break the
-  agent's request.
-
-### D9a. Division of work: proxy stores raw, browser rebuilds
-
-- The proxy **only stores and streams raw traffic**. For each exchange that
-  means the request (method, path, headers, body) and the response (status,
-  headers, the raw SSE / body chunks as they arrive), plus timestamps and an
-  exchange id. It does not parse messages, assign threads or render anything.
-- The **browser does all reconstruction**: parsing request bodies and SSE
-  events, assigning threads (D2a), working out deltas and rewrites (D1, D1a),
-  pairing tools (D4), and everything visual.
-- Consequences:
-  - Reconstruction bugs can never affect forwarding, which supports the D9
-    constraint. The proxy-side addition stays small and stdlib-only (D11).
-  - On page open, the full-history replay (D10) is a replay of **raw events**.
-    The browser rebuilds every thread from them, so each tab rebuilds
-    independently.
+- The dashboard page is served by `monitor.py` on a **separate local port**,
+  `8042`, so no dashboard path ever overlaps the forwarded traffic.
+- Ports and target are command-line flags: `--port` (default 8040),
+  `--dashboard-port` (default 8042), `--target` (default
+  `http://127.0.0.1:8041`). Pointing `--target` at `https://api.anthropic.com`
+  lets the monitor run without `proxy.py` if needed.
+- Claude Code is pointed at the monitor:
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:8040 claude`.
+- The page receives live updates over **Server-Sent Events**.
+- Startup prints:
 
 ```
-proxy:   agent traffic → [raw event log, in memory] → SSE /events
-browser: raw events → parse → threads → render
+python3 monitor.py
+  monitor    http://127.0.0.1:8040 -> http://127.0.0.1:8041
+  dashboard  http://127.0.0.1:8042
 ```
 
-### D10. History: in memory, full replay on open
+- If `proxy.py` is not running, the monitor returns a clear `502` error to
+  the agent and shows it as a red banner (D3b), instead of hanging.
+- **Constraint:** observing must never affect forwarding. Bytes are relayed
+  unchanged and as they arrive, including the real auth headers and the SSE
+  stream chunk by chunk. A slow or disconnected browser, a storage failure,
+  or a parsing failure in the dashboard code must not delay, alter or break
+  the agent's request.
 
-- The proxy keeps **all traffic since it started, in memory**.
+### D9a. Division of work: monitor stores raw, browser rebuilds
+
+- The monitor **only stores and streams raw traffic** (redacted, D15). For each
+  exchange: the request (method, path, headers, body) and the response
+  (status, headers, the raw SSE / body chunks as they arrive), plus
+  timestamps and an exchange id. It does not parse messages, assign threads
+  or render anything.
+- The **browser does all reconstruction**: parsing bodies and SSE events,
+  grouping into sessions (D17) and threads (D2a), deltas and rewrites (D1,
+  D1a), pairing tools (D4), classifying injected text (D3a), and everything
+  visual.
+
+```
+monitor: agent traffic → redact → [raw event log] → SSE /events
+browser: raw events → parse → sessions → threads → render
+```
+
+### D10. History: full replay on open
+
 - A newly opened or reloaded page first receives the **full history**, then
   continues live with no gap and no duplicates. Several tabs can be open at
   once.
-- **Nothing is written to disk.** Restarting the proxy starts with an empty
-  dashboard.
-
-```
-14:00 proxy starts
-14:05 traffic…
-14:20 open page  → sees 14:05–14:20, then live
-15:00 restart    → empty
-```
+- What history survives a restart is decided by D17.
 
 ### D11. Dependencies: zero install, no build
 
-- The server side remains **Python stdlib only**. `python3 proxy.py` is still
-  all you need to run it.
-- The page is **plain HTML/CSS/JS** served by the proxy: no npm, no build
+- The monitor is **Python stdlib only**. Running it needs nothing beyond
+  `python3 proxy.py` and `python3 monitor.py`.
+- The page is **plain HTML/CSS/JS** served by the monitor: no npm, no build
   step, and **no CDN or other network fetches**, so it works offline.
-- Markdown rendering (D3) is a **small hand-written subset**: headings,
-  lists, emphasis, inline code, fenced code blocks, links.
+- Markdown rendering is a **small hand-written subset**: headings, lists,
+  tables, emphasis, inline code, fenced code blocks, links.
 
 ### D12. Provider scope: Anthropic only, with a raw fallback
 
-- Version one fully renders **Anthropic Messages traffic only**
-  (`/v1/messages` requests and their SSE replies).
+- Version one fully renders **Anthropic Messages traffic only**.
 - Any other traffic (Codex via `--upstream`, other endpoints, bodies that
-  don't parse) **still appears**, as plain request/response cards with the
-  body pretty-printed. Nothing is dropped silently.
-- Codex / OpenAI Responses support is **future work**.
+  don't parse) **still appears** under an "other traffic" sidebar entry, as
+  plain request/response cards with the body pretty-printed. Nothing is
+  dropped silently.
+
+### D14. Raw view: one click from every item
+
+- Every item in the main view (prompt, reply, tool card, divider, chip) has a
+  small `raw` link that opens the **matching exchange** in a slide-over raw
+  panel, scrolled to the relevant block. The raw panel never appears inline.
+- The raw panel lists every exchange of the current session, plus side calls
+  and other traffic, and for each one shows:
+  - request and response headers (secrets `[REDACTED]`, D15),
+  - request and response bodies as collapsible, pretty-printed JSON,
+  - for streamed replies, both the **reassembled message** and the **raw
+    event stream**,
+  - model, token counts and duration,
+  - a `download JSON` button that saves the exchange.
+
+### D15. Secrets: redacted before storing anything
+
+- Before an exchange is stored, kept in memory, sent to the browser or
+  written to disk, these headers are replaced with `[REDACTED]`
+  (case-insensitive): `x-api-key`, `authorization`, `proxy-authorization`,
+  `cookie`, `set-cookie`.
+- Forwarding still uses the real headers; only the observed copy is redacted.
+- The monitor's two ports bind to **`127.0.0.1` only**. There is no
+  authentication, since access is local only.
+- Message bodies are stored verbatim, so file contents Claude reads are
+  visible in the dashboard. This is accepted for now.
+
+### D16. Status bar
+
+A thin bar above the main pane shows: session title, working directory,
+`● live` if the session is active, and the current permission mode when known
+(D18). It is small and visually secondary.
 
 ```
-/v1/messages        → full thread view
-anything else       → ┃ POST /responses
-                      ┃ { pretty-printed JSON … }
+fix the failing test · /Users/alon/lab4 · ● live · mode: default
 ```
+
+### D17. Sessions and persistence (Tier 2)
+
+- **Sessions.** Traffic is grouped into sessions, one per Claude Code run.
+  The browser groups by a session identifier found in the request when there
+  is one (Claude Code includes a session id in `metadata.user_id`; the build
+  must verify where it appears in real traffic). Without an identifier,
+  traffic falls into one session per monitor run.
+- **Session list.** Above the thread list, a session picker lists sessions by
+  most recent activity. Each shows its title (the first typed prompt,
+  truncated), working directory (taken from the injected environment
+  context), start time and a `●` if active. The current session is selected
+  by default.
+- **Search.** A search box filters sessions by the text of typed prompts.
+- **Persistence.** The monitor appends every redacted raw event to
+  `data/traffic.jsonl` (one JSON object per line, stdlib only). On startup it
+  loads the file, so past sessions stay browsable after a restart.
+  `--no-save` disables writing to disk.
+- `data/` is added to `.gitignore` from the first build. The log is never
+  committed.
+- A write failure is logged to the terminal and ignored; it never affects
+  forwarding (D9).
+
+### D18. Permissions (Tier 2)
+
+Visually secondary. Derived from the traffic, and refined by hooks when they
+are enabled (D19).
+
+- **Denied tool calls.** A `tool_result` whose content says the user rejected
+  the tool use (Claude Code sends text like "The user doesn't want to proceed
+  with this tool use") gets status `denied` and a small `asked → denied`
+  badge, instead of `✗ error`.
+- **Mode changes.** When injected text shows a mode change (for example plan
+  mode entered or exited), a thin grey divider appears:
+  `— permission mode: default → plan —`, and the status bar updates.
+- **Permissions tab.** A tab next to the timeline lists all permission
+  events of the session chronologically.
+- With hooks enabled (D19), the badges also show `asked → allowed`, and the
+  exact mode comes from the hook data.
+
+### D19. Optional hooks (Tier 2, off by default)
+
+The dashboard works fully from traffic alone. Hooks only add data the traffic
+does not carry (permission prompts and decisions, exact permission mode).
+
+- The monitor accepts `POST /hooks` on the dashboard port.
+- A stdlib Python script, `hooks/forward.py`, POSTs its stdin JSON there with
+  a 1-second timeout, **always exits 0 and prints nothing**, so it never
+  blocks, alters or delays Claude Code, even when the monitor is down.
+- Hooks are installed **only per project**, into `.claude/settings.local.json`
+  of the folder where Claude Code runs, by `python3 monitor.py --install-hooks`
+  (with a backup of any existing file). **Never** into `~/.claude/settings.json`.
+- Events: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `Notification`, `Stop`, `SubagentStop`,
+  `SessionStart`, `SessionEnd`. Hook events are attached to sessions by
+  `session_id` and to tool cards by `tool_use_id`.
 
 ## 4. Open decisions
 
-These were not discussed, or were left open on purpose. Each one needs a
-decision before or during implementation.
-
-- D2c. How "main", "subagent" and "side call" are told apart, which thread
-  is selected by default, and how threads are labelled in the sidebar.
-- D2d. Consequences of D2a's rule 2 to watch for:
-  - A **fresh subagent** whose first request has no prefix match but the same
-    system prompt and tools as an earlier subagent of the same type would be
-    attached to that earlier thread as a "rewrite", not given its own thread.
-  - Starting over in the main agent (e.g. `/clear`) would likewise continue
-    the main thread with a divider, not start a new one.
-
-  Whether these are acceptable, or need an extra rule (e.g. a short new
-  history that shares no messages with the thread starts a new thread), is
-  open.
+- D2c. How "main", "subagent" and "side call" are told apart (e.g. by model,
+  presence of tools, or the `Agent` call that spawned them).
+- D2d. Consequences of D2a's rule 2 to watch for: a fresh subagent with the
+  same system prompt and tools as an earlier one would be attached to that
+  earlier thread as a "rewrite"; `/clear` would continue the main thread with
+  a divider. Whether these need an extra rule is open.
 - D2e. The exact list of fields ignored as "similar to `cache_control`" in
   D2a's comparison.
-- D3b. Rules for detecting injected text (e.g. `<system-reminder>` tags,
-  separate text blocks, known hook/context wrappers), and what to do when
-  detection is uncertain. How images and redacted thinking render.
-- D5a. Exact preview length (how many lines count as "the first few"),
-  whether the threshold is user-adjustable, and whether there is an
-  expand/collapse-all control.
-- D9b. Whether the dashboard port is a CLI flag (e.g. `--dashboard-port`),
-  and the exact shape of the raw events (e.g. how response chunks are
-  framed and encoded inside the SSE stream).
-- D10a. A memory cap for very long sessions (and what happens when it is
-  reached), and whether there is a "clear" button.
-- D12a. Where fallback (non-Messages) cards appear: in the "side calls"
-  group, their own "other traffic" sidebar entry, or somewhere else.
-- D13. Security. The dashboard shows full prompts, file contents and tool
-  output. To decide: bind to `127.0.0.1` only (as the proxy does now)? How
-  `authorization` / `x-api-key` and other secret-looking headers are redacted
-  (they are truncated in terminal output today)? Whether headers are shown in
-  the UI at all?
-- D14. Raw view: whether each exchange offers a "raw" toggle showing the
-  exact request JSON and SSE stream, for debugging the reconstruction.
-- D15. Search and filtering within a thread (e.g. show only tool calls, find
-  text). Not discussed.
-- D16. Light/dark theme and the concrete color palette for D3's kinds. Not
-  discussed.
+- D3c. How images in messages render.
+- D5a. Exact preview length, whether the threshold is user-adjustable, and
+  whether there is an expand/collapse-all control.
+- D9b. The exact shape of the raw events inside the SSE stream and in
+  `data/traffic.jsonl`.
+- D10a. A memory and file-size cap for very long sessions, and whether there
+  is a "clear" button.
+- D20. Search and filtering *within* a thread (e.g. show only tool calls).
+- D21. Light/dark theme and the concrete color palette.
 
 ## 5. Acceptance criteria
 
-Manual checks to run during the lab. Setup: `python3 proxy.py`, then
-`ANTHROPIC_BASE_URL=http://localhost:8041 claude` in a second terminal, then
-open `http://localhost:8042`. Each check names the decisions it covers.
+Manual checks to run during the lab. Setup, in three terminals:
+`python3 proxy.py --port 8041`, then `python3 monitor.py`, then
+`ANTHROPIC_BASE_URL=http://127.0.0.1:8040 claude`. Open
+`http://127.0.0.1:8042`. Each check names the decisions it covers.
 
-- [ ] **Startup (D9, D11).** One command prints both the proxy and dashboard
-  URLs. The page loads, and the browser's network tab shows no requests
-  outside `localhost`.
+### Tier 1
+
+- [ ] **Startup (D9, D11).** `python3 monitor.py` prints both URLs. The page
+  loads, and the browser's network tab shows no requests outside `127.0.0.1`.
+- [ ] **Chain works (D9).** With both programs running, Claude Code behaves
+  exactly as without them, including streaming, and `proxy.py` still prints
+  the traffic in its own terminal as before.
+- [ ] **Proxy down (D9).** Stop `proxy.py` and send a prompt: the agent gets
+  an error, not a hang, and the page shows a red `502` banner.
 - [ ] **One task with a tool call (D3, D3a, D4).** Ask *"How many files are
-  in this folder? Use a shell command."* The page shows: a `YOU` bubble
-  containing only the typed text, with any reminders in a collapsed
-  `injected` chip; `MODEL` text; a `→ Bash` card whose result appears inside
-  the same card, which shows `running…` until then. A tool result is never
-  labelled `YOU`.
+  in this folder? Use a shell command."* The page shows a `YOU` bubble with
+  only the typed text, `MODEL` text, and one `▸ Bash · <description>` card
+  whose status goes from `running…` to `✓`. No tool result is labelled `YOU`.
+- [ ] **No injected text in my bubble (D3a).** No `YOU` bubble contains
+  `<system-reminder>`, `# Environment` or other injected text. They appear
+  only in `injected:` chips, which expand to the full text. There is no empty
+  `YOU` bubble.
+- [ ] **Full tool call available (D4, D14).** Expanding the Bash card shows
+  the full command exactly once and the full result. Ask it to read
+  `proxy.py`: the result shows a preview and `show all`, which reveals every
+  line. The card's `raw` link opens the exact `tool_use` / `tool_result` JSON.
+- [ ] **No raw JSON in the main view (D3b).** `tool_addition` blocks appear
+  only as a `tools added` divider and in the Tools header, never as JSON
+  cards. Other unknown blocks appear only as collapsed chips.
+- [ ] **No empty thinking (D3b).** No `thinking (0 lines)` block appears.
+- [ ] **Errors (D3b, D4, D12).** A failing shell command shows a red,
+  auto-expanded card. `curl -X POST 127.0.0.1:8040/v1/messages -d '{}'`
+  shows a red error banner. `curl 127.0.0.1:8040/v1/models` appears under
+  "other traffic" as a plain card with pretty-printed JSON.
 - [ ] **No repetition (D1, D8).** After three or more turns, every message
-  appears exactly once. Exchange markers between them show time, duration
-  and output tokens. Hovering a marker shows model, usage, stop reason and
-  status.
-- [ ] **Live and sticky scroll (D6).** A long reply grows as it streams. If
-  you scroll up while it streams, the view stays put and `↓ N new` appears.
-  Clicking it jumps back down and resumes following.
-- [ ] **Long content (D5).** Ask it to read `proxy.py`. The result is
-  collapsed to a few preview lines plus `▸ N more lines`, and expands on
-  click.
-- [ ] **System prompt and tools (D7).** The top of the thread shows a
-  collapsed `System prompt (… lines) · Tools (…)` header, and it is not
-  repeated anywhere else.
-- [ ] **Subagent (D2, D2a).** Ask for a task that spawns a subagent. A new
-  sidebar entry appears with an activity indicator. The main thread shows
-  only the `Agent` call and its result. Side calls are counted under
-  "side calls".
-- [ ] **Compaction (D1a, D2a rule 2).** Run `/compact`, then send one more
-  prompt. The same thread continues after a `history rewritten` divider,
-  with no new sidebar entry.
-- [ ] **Reload and second tab (D9a, D10).** Reload mid-session and open a
-  second tab. Both show the same full history and keep updating live.
-  Restarting the proxy gives an empty page.
-- [ ] **Forwarding unaffected (D9).** Close every dashboard tab while a
-  reply is streaming. The agent finishes normally, and the terminal output
-  matches what the proxy printed before.
-- [ ] **Errors and fallback (D3a, D12).** Run
-  `curl -X POST localhost:8041/v1/messages -d '{}'`: a red error banner shows
-  the status. Run `curl localhost:8041/v1/models`: it appears as a plain card
-  with pretty-printed JSON.
+  appears exactly once. Markers show time, duration and output tokens, and
+  hovering shows model, usage, stop reason and status.
+- [ ] **Live and sticky scroll (D6).** `MODEL is responding…` appears, then a
+  long reply grows as it streams. Scrolling up stops following and shows
+  `↓ N new`, which jumps back down.
+- [ ] **System prompt and tools (D7).** One collapsed header at the top of
+  the thread, not repeated anywhere else.
+- [ ] **Subagent (D2, D2a).** A task that spawns a subagent creates a sidebar
+  entry with an activity indicator. The main thread shows the `Agent` card,
+  which expands into the nested mini-timeline and has `open thread`.
+- [ ] **Compaction (D1a).** After `/compact` and one more prompt, the same
+  thread continues after a `history rewritten` divider.
+- [ ] **Raw panel (D14).** Every item has a `raw` link. The panel shows
+  headers, bodies, the reassembled reply and the raw stream, tokens and
+  duration, and `download JSON` saves a file.
+- [ ] **Secrets (D15).** In the raw panel, `authorization` / `x-api-key`
+  show `[REDACTED]`. `curl http://<this computer's network IP>:8042` from the
+  same machine fails, because the server binds to `127.0.0.1` only.
+- [ ] **Reload and second tab (D10).** Reload mid-session and open a second
+  tab. Both show the same full history and keep updating live.
+- [ ] **Forwarding unaffected (D9).** Close every dashboard tab while a reply
+  is streaming. The agent finishes normally.
+
+### Tier 2
+
+- [ ] **Sessions and search (D17).** Run two Claude Code sessions one after
+  the other. Both appear in the session list with title, directory and start
+  time; the search box finds each one by a word from its prompt.
+- [ ] **Persistence (D17).** Restart the monitor: past sessions are still
+  listed and readable. `grep -i "sk-ant" data/traffic.jsonl` finds nothing,
+  and `git status` does not list `data/`.
+- [ ] **Denied tool (D18).** Deny a tool call when Claude Code asks. Its card
+  shows `denied` with an `asked → denied` badge, and it appears in the
+  Permissions tab.
+- [ ] **Mode change (D16, D18).** Enter and leave plan mode. A divider
+  appears and the status bar updates.
+- [ ] **Hooks (D19).** After `--install-hooks`, only the project's
+  `.claude/settings.local.json` changes. Allowed tool calls show
+  `asked → allowed`. Stopping the monitor does not interrupt Claude Code's
+  hooks.
+
+## 6. Changes since the last build
+
+The last build (from revision 1) showed on live traffic:
+
+1. Injected environment context (`# Environment ...`) was rendered as a
+   `YOU` bubble → D3a now has a concrete detection rule.
+2. `tool_addition` blocks were shown as large raw JSON cards → D3b.
+3. An empty `thinking (0 lines)` block was shown → D3b.
+4. The Bash command appeared twice in the tool card → D4 redesigned.
+
+Merged from the partner's draft, adapted to this architecture: one-line tool
+summaries with full detail on expand (D4), clean prompts (D3a), raw link on
+every item and raw panel (D14), secret redaction and `127.0.0.1` binding
+(D15), status bar (D16), sessions, search and persistence (D17),
+permissions (D18), optional per-project hooks (D19), `MODEL is responding…`
+indicator (D6), auto-expanded red errors (D4).
+
+Kept from our design where the two conflicted: token-by-token streaming
+instead of complete-messages-only (D6); stdlib only instead of FastAPI and
+SQLite (D11, D17 uses a JSONL file); side calls in the sidebar instead of
+raw-only (D2).
+
+**Revision 3:** `proxy.py` must stay exactly as provided. Revision 1 had the
+dashboard built into `proxy.py`; it now runs as a separate `monitor.py` in
+front of the unchanged proxy (D9), with the agent pointed at port 8040.
+Everything the dashboard shows is unchanged.
