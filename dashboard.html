@@ -77,8 +77,8 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 #conn { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
 
 /* Main pane */
-#main { position: relative; flex: 1; min-width: 0; }
-#pane { height: 100%; overflow-y: auto; }
+#main { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; }
+#pane { flex: 1; min-height: 0; overflow-y: auto; }
 #log { max-width: 960px; margin: 0 auto; padding: 16px 24px 56px; }
 #jump {
   position: absolute;
@@ -197,6 +197,25 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .header .tool-entry { margin: 4px 0; }
 .header .tool-entry pre { margin: 4px 0 8px 14px; font-size: 12px; }
 
+/* Permissions from traffic (SPEC D17c): small, grey, secondary to the conversation */
+#permlink { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 12px; }
+#status { flex: none; padding: 4px 24px; background: var(--surface); border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 12px; }
+#status[hidden] { display: none; }
+#status strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+.card .badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0 7px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  color: var(--ink-2);
+  font: 11px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: nowrap;
+}
+.card .badge.denied { border-color: var(--critical); color: var(--critical); font-weight: 700; }
+.card.denied { border-left-style: dashed; border-left-color: var(--critical); }
+.item.mode { margin: 10px 0; color: var(--ink-2); font-size: 11.5px; text-align: center; }
+
 @media (max-width: 700px) {
   #sidebar { width: 150px; }
   #log { padding-inline: 12px; }
@@ -208,9 +227,11 @@ pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 <nav id="sidebar" aria-label="Threads">
   <h1>Threads</h1>
   <div id="threads"></div>
+  <a id="permlink" target="_blank" rel="noopener noreferrer" title="prompts, decisions and the exact mode, from Claude Code hooks (permissions.py)">permissions page ↗</a>
   <div id="conn" role="status">connecting…</div>
 </nav>
 <main id="main">
+  <div id="status" role="status" hidden></div>
   <div id="pane"><div id="log"><div class="empty">Waiting for traffic. Run the agent with <code>ANTHROPIC_BASE_URL</code> pointing at the proxy.</div></div></div>
   <button id="jump" hidden></button>
 </main>
@@ -514,6 +535,7 @@ function addMessage(target, message) {
     blocks.forEach(b => addAssistantBlock(target, b));
     return;
   }
+  if (target.kind === 'thread') noteModeHints(target, message);  // SPEC D17c
   const injected = new Map();
   const attachments = [];
   for (const block of blocksOf(message.content)) {
@@ -570,6 +592,7 @@ function fillResult(target, block) {
   const tool = target.toolMap.get(block.tool_use_id);
   if (tool) {
     tool.result = result;
+    tool.denial = denialOf(result);  // SPEC D17c
     touch(tool);
   } else {
     pushItem(target, { kind: 'orphan', result });
@@ -762,6 +785,7 @@ function activity(ex) {
 function onRawEvent(event) {
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
+  eventTs = event.ts;
   const ex = exchanges.get(event.exchange);
   try {
     if (event.kind === 'request') handlers.request(event);
@@ -959,7 +983,7 @@ const RENDERERS = {
   tool(item, el) {
     const card = el.appendChild(h('div', 'card'));
     const key = keyArgument(item);
-    card.append(h('div', 'line', h('span', 'name', `→ ${item.name}`), h('span', 'arg', firstLine(key.value))));
+    card.append(h('div', 'line', h('span', 'name', `→ ${item.name}`), h('span', 'arg', firstLine(key.value)), denialBadge(card, item)));
     if (item.json !== null) {
       if (item.json) collapsible(card.appendChild(h('div', 'detail')), item, 'input', item.json, drawPre);
     } else {
@@ -1138,6 +1162,7 @@ function flush() {
     while (shownCount < shownView.items.length) log.append(ensureRendered(shownView.items[shownCount++]));
   }
   if (sidebarDirty) drawSidebar();
+  drawModeStatus();
   if (following) scrollToBottom();
   drawJump();
 }
@@ -1186,6 +1211,69 @@ function drawSidebar() {
   }));
   document.getElementById('conn').textContent = connected ? `live · ${plural(exchanges.size, 'exchange')}` : 'reconnecting…';
 }
+
+// ---- Permissions from traffic (SPEC D17c) ------------------------------------------
+// The page can only see the API traffic: denials come back to the model as error
+// tool_results, and plan mode shows up in injected system reminders. Prompts,
+// allowed decisions and the exact mode come from hooks, which permissions.py
+// collects and shows on its own page; this page only links to it.
+
+const USER_DENIAL = /doesn't want to (?:proceed with this tool use|take this action)|tool use was rejected/i;
+const RULE_DENIAL = /permission to use [\s\S]*? has been denied/i;
+const PLAN_ON = /\bplan mode is (?:still )?active\b/i;
+const PLAN_OFF = /\bexited plan mode\b/i;
+
+// 'asked' when the user said no to a prompt, 'rule' when a setting or the mode did.
+function denialOf(result) {
+  if (!result.isError) return null;
+  if (USER_DENIAL.test(result.text)) return 'asked';
+  return RULE_DENIAL.test(result.text) ? 'rule' : null;
+}
+
+function denialBadge(card, item) {
+  if (!item.denial) return null;
+  card.classList.add('denied');
+  const badge = h('span', 'badge denied', item.denial === 'asked' ? '✕ asked → denied' : '✕ denied');
+  badge.title = item.denial === 'asked' ? 'the user rejected the permission prompt' : 'denied by a permission rule or the mode, without a prompt';
+  return badge;
+}
+
+// Only plan mode is visible in the traffic, so the thread's mode is 'plan',
+// 'not plan' (after a plan-exit reminder) or unknown.
+function noteModeHints(thread, message) {
+  let mode = thread.mode || null;
+  for (const block of blocksOf(message.content)) {
+    if (block.type !== 'text') continue;
+    for (const m of (block.text || '').matchAll(INJECTED_TAGS)) {
+      if (m[1] !== 'system-reminder') continue;
+      if (PLAN_OFF.test(m[2])) mode = 'not plan';
+      else if (PLAN_ON.test(m[2])) mode = 'plan';
+    }
+  }
+  if (!mode || mode === thread.mode) return;
+  if (thread.mode) pushItem(thread, { kind: 'mode', from: thread.mode, to: mode, ts: eventTs });
+  thread.mode = mode;
+}
+
+RENDERERS.mode = (item, el) => {
+  el.title = `${clock(item.ts)} · inferred from a system reminder`;
+  el.append(`— permission mode: ${item.from} → ${item.to} —`);
+};
+
+let eventTs = 0;  // time of the raw event being processed, for items that carry no exchange
+
+function drawModeStatus() {
+  const status = document.getElementById('status');
+  status.hidden = !shownView || shownView.kind !== 'thread';
+  if (status.hidden) return;
+  const mode = shownView.mode;
+  status.replaceChildren('permission mode: ', h('strong', null, mode || 'unknown'),
+    mode ? ' · inferred from system reminders' : ' · not visible in the traffic',
+    ' · exact mode and decisions on the permissions page');
+}
+
+document.getElementById('permlink').href =
+  `${location.protocol}//${location.hostname}:${Number(location.port || 8042) + 1}/`;
 
 // ---- Sticky scroll (SPEC D6) -------------------------------------------------------
 

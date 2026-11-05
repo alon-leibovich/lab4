@@ -1,7 +1,9 @@
 # SPEC: Live traffic dashboard for proxy.py
 
-Status: **draft**. Section 3 lists what has been decided (D1–D12). Section 4
-lists what is still open. Nothing has been implemented.
+Status: **draft, partly implemented**. Section 3 lists what has been decided
+(D1–D12, D17). `proxy.py` + `dashboard.html` implement D1–D12;
+`permissions.py` + `permissions.html` + `hooks/` + `install_hooks.py` implement
+D17. Section 4 lists what is still open.
 
 ## 1. Goal
 
@@ -361,6 +363,120 @@ anything else       → ┃ POST /responses
                       ┃ { pretty-printed JSON … }
 ```
 
+### D17. Permissions tracker: hooks into a separate page, proxy untouched
+
+- Goal: while watching a session, see the **permission mode**
+  (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, …), **which
+  tool calls asked** for permission, and whether each was **allowed or
+  denied**. Visually secondary to the conversation: small, grey, text labels.
+- The API traffic carries only part of this: denials come back as error
+  `tool_result`s, and plan mode shows up in injected reminders. Prompts,
+  "allowed" decisions and the exact mode are only in **Claude Code hooks**,
+  whose JSON input carries `session_id`, `hook_event_name`,
+  `permission_mode`, and for tool events `tool_name`, `tool_input` and (except
+  `PermissionRequest`) `tool_use_id`.
+- **`proxy.py` is not changed.** The hook receiver is a **separate stdlib
+  process**, `permissions.py`, with its own page. Reasons: the proxy stays
+  exactly as reviewed (D9: nothing new can ever touch forwarding), and either
+  process runs without the other.
+- The dashboard (D9, CSP `default-src 'none'`, `connect-src 'self'`) cannot
+  fetch from another port, so it **only shows what the traffic shows** (D17c)
+  and links to the permissions page. Hook data is never merged into the
+  dashboard's threads.
+
+```
+claude ─ hooks → forward.sh ─ POST → permissions.py :8043 → page (SSE)
+   └── API → proxy.py :8041 → upstream
+                   └→ dashboard :8042  (traffic-only hints, link → :8043)
+```
+
+### D17a. Hook transport: raw in, never blocking
+
+- `permissions.py` (default port **8043**, `--port`, bound to `127.0.0.1`)
+  serves `GET /` (`permissions.html`), `GET /events` (SSE) and
+  `POST /hooks`. It follows D9a / D10 exactly: it **stores each hook's raw
+  JSON body in memory** with a sequence number and timestamp, streams it,
+  replays everything on page open, and interprets nothing.
+- `hooks/forward.sh` is the hook command: `curl -s -m 1` posts stdin to
+  `$PERMISSIONS_HOOKS_URL` (default `http://127.0.0.1:8043/hooks`), prints
+  nothing, and **always exits 0**. If `permissions.py` is down, Claude Code
+  behaves exactly as without the hook and waits at most 1 s.
+- `install_hooks.py` (stdlib) adds the hook to a settings file: default
+  `~/.claude/settings.json`, `--settings PATH`, `--url URL`, `--uninstall`.
+  It writes a **timestamped backup** before changing a file, keeps every
+  other setting and hook, and is **idempotent** (entries that run its
+  `forward.sh` are replaced, never duplicated).
+- Events installed: `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+  `PostToolUse`, `PostToolUseFailure`, `Stop` (tool events with matcher
+  `*`). A `PermissionDenied` event is understood if it arrives.
+
+### D17b. Inference rules (in the permissions page)
+
+- **Mode**: the latest `permission_mode` seen for the session. A **mode
+  change** is a hook whose `permission_mode` differs from the previous one for
+  that session. The first value seen is logged as "first seen", not a change.
+- **Call**: each `PreToolUse` creates a tool card, keyed by `tool_use_id`.
+- **Request → call**: a `PermissionRequest` joins its call by `tool_use_id`
+  if present, else the **latest unfinished call in the same session with
+  the same tool name and input** (compared ignoring key order and
+  `cache_control`) that has no request yet. With no match it gets a card of
+  its own.
+- **Allowed**: a `PostToolUse` (or a `PostToolUseFailure` that is not a
+  denial: the tool ran, then failed) for that call.
+- **Denied**: a `PostToolUseFailure` / `PermissionDenied` whose text is a
+  denial; or, **inferred**, nothing arrives before the session's next
+  `UserPromptSubmit` or `Stop`. Explicit evidence overrides an inference.
+- A denial with no prompt before it (deny rule, mode) is shown as `✕ denied`
+  without "asked".
+- **Sessions, not threads.** The page is organised by `session_id` (sidebar:
+  "all sessions" + one entry per session with its mode). Subagent tool calls
+  carry the parent's `session_id`, so they appear in that session. Hooks
+  that arrive before any traffic, or with no proxy running at all, need no
+  mapping.
+
+```
+┌ sessions ─────┐┌ permission mode: plan · 2 asked · 1 allowed · 1 denied ─
+│ all sessions  ││                              YOU  clean up the repo
+│ session 1a2b ●││ ┃ → Bash  ls -la                    ✓ asked → allowed
+│  mode: plan   ││ ┃ ← done
+└───────────────┘│ ┃ → Bash  rm -rf build              ✕ asked → denied
+                 │ ┃ ← ✕ not run (denied)
+                 │     — permission mode: default → plan —
+```
+
+- A **Permissions** tab lists every request and mode change in order:
+  time, session, event (`request` / `denial` / `mode change`), tool + key
+  argument (or `from → to`), outcome (`? pending…`, `✓ allowed`, `✕ denied`,
+  plus why, e.g. `inferred: no result before Stop`).
+
+### D17c. Dashboard: traffic-only hints
+
+- A tool card whose `tool_result` is an error with denial text gets a badge:
+  `✕ asked → denied` for "The user doesn't want to proceed with this tool
+  use…", `✕ denied` for "Permission to use … has been denied" (no prompt).
+  The card's rule turns dashed red; the badge carries the text (D3).
+- A thin status line above the thread shows the mode the traffic implies:
+  `plan` after a "Plan mode is active" reminder, `not plan` after an
+  "Exited plan mode" reminder, otherwise `unknown`. A change adds a grey
+  divider `— permission mode: plan → not plan —` before the new messages.
+- The sidebar has a plain link `permissions page ↗` to the dashboard's port
+  + 1 (8043 by default). `allowed` and pending prompts are **not** shown in
+  the dashboard: the traffic has no sign of them.
+
+### D17d. Security
+
+- Hook payloads contain tool inputs and outputs (file contents, commands),
+  the same material as the traffic: **in memory only**, never on disk, gone
+  on restart. Nothing new is redacted (hook bodies carry no headers).
+- `permissions.py` binds `127.0.0.1`, checks `Host` like the dashboard (DNS
+  rebinding), and serves the same strict CSP.
+- `POST /hooks` refuses requests with an `Origin` header and any content
+  type other than `application/json`, so a web page cannot plant fake
+  events (a cross-site JSON post needs a preflight that is never approved).
+  Bodies over 16 MB are refused.
+- `install_hooks.py` never runs on its own: the user runs it, and it backs
+  up the file first.
+
 ## 4. Open decisions
 
 These were not discussed, or were left open on purpose. Each one needs a
@@ -450,3 +566,28 @@ open `http://localhost:8042`. Each check names the decisions it covers.
   `curl -X POST localhost:8041/v1/messages -d '{}'`: a red error banner shows
   the status. Run `curl localhost:8041/v1/models`: it appears as a plain card
   with pretty-printed JSON.
+
+Permissions tracker (D17). Extra setup: `python3 permissions.py` in a third
+terminal, `python3 install_hooks.py` once, then restart Claude Code; open
+`http://localhost:8043`.
+
+- [ ] **Hooks never block (D17a).** Stop `permissions.py` and use Claude
+  Code: nothing changes and nothing is printed. `install_hooks.py` run twice
+  adds its entries once, leaves other hooks alone, and writes a backup;
+  `--uninstall` removes only its entries.
+- [ ] **Mode (D17b).** The status line shows the session's mode. Press
+  shift+tab into plan mode and send a prompt: a grey
+  `— permission mode: default → plan —` divider appears and the status
+  line says `plan`.
+- [ ] **Allowed (D17b).** In default mode ask for a command that needs
+  approval and approve it: the card shows `asked → …` while the prompt is
+  open, then `✓ asked → allowed`.
+- [ ] **Denied (D17b, D17c).** Reject a prompt: the card shows
+  `✕ asked → denied` (inferred at the next prompt or `Stop` if no other
+  signal). In the dashboard the same call's card shows `✕ asked → denied`
+  once the denial `tool_result` is sent.
+- [ ] **Permissions tab (D17b).** Lists every request and mode change in
+  order, with time, session, tool + key argument and outcome.
+- [ ] **Replay (D10, D17a).** Reloading the permissions page shows the
+  same history; restarting `permissions.py` gives an empty page.
+- [ ] **Proxy unchanged (D17).** `git diff` shows no change to `proxy.py`.

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent permissions</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --raised: #f0efec;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --line: #e1e0d9;
+  --line-2: #c3c2b7;
+  --you: #2a78d6;
+  --tool: #eb6834;
+  --critical: #d03b3b;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --raised: #2c2c2a;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --line: #2c2c2a;
+    --line-2: #383835;
+    --you: #3987e5;
+    --tool: #d95926;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button:focus-visible { outline: 2px solid var(--you); outline-offset: 2px; }
+
+#sidebar { width: 230px; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--line); }
+#sidebar h1 { margin: 0; padding: 14px 14px 8px; font-size: 12px; font-weight: 600; color: var(--ink-2); }
+#sessions { flex: 1; overflow-y: auto; }
+.entry { display: block; width: 100%; padding: 7px 14px; border-left: 3px solid transparent; }
+.entry:hover { background: var(--raised); }
+.entry[aria-current="true"] { background: var(--raised); border-left-color: var(--ink); font-weight: 600; }
+.entry .row { display: flex; gap: 6px; justify-content: space-between; }
+.entry .snippet { display: block; overflow: hidden; font-size: 12px; font-weight: 400; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+#conn { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-2); }
+
+#main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+#status { flex: none; display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; padding: 6px 24px; background: var(--surface); border-bottom: 1px solid var(--line); color: var(--ink-2); font-size: 12px; }
+#status strong { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+#tabs { display: flex; gap: 4px; margin-left: auto; }
+#tabs button { padding: 1px 10px; border: 1px solid var(--line-2); border-radius: 10px; }
+#tabs button[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--page); font-weight: 600; }
+#pane { flex: 1; min-height: 0; overflow-y: auto; }
+#log { max-width: 960px; margin: 0 auto; padding: 16px 24px 56px; }
+.empty { padding: 48px 0; color: var(--ink-2); text-align: center; }
+.empty code { font-family: var(--mono); }
+
+/* Timeline */
+.item { margin: 8px 0; }
+.prompt { color: var(--ink-2); font-size: 12.5px; text-align: right; overflow-wrap: anywhere; }
+.prompt .label { margin-right: 6px; color: var(--you); font-size: 11px; font-weight: 700; }
+.sid { margin-right: 6px; color: var(--ink-2); font-family: var(--mono); font-size: 11px; }
+.card { padding: 2px 0 2px 10px; background: var(--surface); border-left: 3px solid var(--tool); font-family: var(--mono); font-size: 12.5px; }
+.card .line { display: flex; gap: 8px; align-items: baseline; padding: 2px 8px 2px 0; }
+.card .name { flex: none; font-weight: 700; }
+.card .arg { min-width: 0; overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.card .state { color: var(--ink-2); font-style: italic; }
+.card.denied { border-left-style: dashed; border-left-color: var(--critical); }
+.badge { flex: none; margin-left: auto; padding: 0 7px; border: 1px solid var(--line-2); border-radius: 9px; color: var(--ink-2); font: 11px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; white-space: nowrap; }
+.badge.denied { border-color: var(--critical); color: var(--critical); font-weight: 700; }
+.badge.pending { border-style: dashed; font-style: italic; }
+.outcome.denied { color: var(--critical); font-weight: 700; }
+.outcome.pending { font-style: italic; }
+.divider { margin: 10px 0; color: var(--ink-2); font-size: 11.5px; text-align: center; }
+
+/* Permissions table */
+.perm, .cols { display: grid; grid-template-columns: 64px 86px 96px minmax(0, 1fr) 220px; gap: 10px; align-items: baseline; }
+.cols { padding-bottom: 4px; border-bottom: 1px solid var(--line-2); color: var(--ink-2); font-size: 11px; font-weight: 700; }
+.perm { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.perm .what { overflow: hidden; font-family: var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.perm .time, .perm .where, .perm .why { color: var(--ink-2); }
+.perm .sid { margin: 0; }
+.perm .why { display: block; font-size: 11.5px; font-style: normal; font-weight: 400; }
+
+@media (max-width: 700px) {
+  #sidebar { width: 150px; }
+  #log, #status { padding-inline: 12px; }
+  .perm, .cols { grid-template-columns: 56px minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+<nav id="sidebar" aria-label="Sessions">
+  <h1>Sessions</h1>
+  <div id="sessions"></div>
+  <div id="conn" role="status">connecting…</div>
+</nav>
+<main id="main">
+  <div id="status">
+    <span id="summary"></span>
+    <span id="tabs" role="group" aria-label="View">
+      <button type="button" data-tab="timeline">Timeline</button>
+      <button type="button" data-tab="permissions">Permissions</button>
+    </span>
+  </div>
+  <div id="pane"><div id="log"></div></div>
+</main>
+<script>
+'use strict';
+
+// SPEC D17: hook events in, permission mode / prompts / decisions out. The
+// server only stores raw hook JSON; everything here is worked out in the page.
+
+const KEY_ARGS = {
+  Bash: 'command', Read: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Write: 'file_path',
+  NotebookEdit: 'notebook_path', Grep: 'pattern', Glob: 'pattern', Agent: 'description', Task: 'description',
+  WebFetch: 'url', WebSearch: 'query',
+};
+const DENIAL = /doesn't want to (?:proceed with this tool use|take this action)|permission to use [\s\S]*? has been denied|tool use was rejected/i;
+const OUTCOME = { pending: 'asked → …', allowed: '✓ asked → allowed', denied: '✕ asked → denied' };
+
+// ---- State ------------------------------------------------------------------------
+
+const sessions = new Map();  // session_id → session
+const timeline = [];         // prompts, calls, mode changes, stops: every session, in order
+const permEvents = [];       // permission requests and mode changes, in order
+let hookCount = 0;
+let bootId = null;
+let lastSeq = -1;
+let synced = false;
+let connected = false;
+let frameQueued = false;
+let chosen = null;           // a session, or null for all of them
+let tab = 'timeline';
+
+const pane = document.getElementById('pane');
+const log = document.getElementById('log');
+
+function getSession(id) {
+  if (!sessions.has(id)) {
+    sessions.set(id, { id, short: id.slice(0, 8), mode: null, cwd: '', firstPrompt: '', calls: new Map(), open: [] });
+  }
+  return sessions.get(id);
+}
+
+// ---- Helpers ------------------------------------------------------------------------
+
+function h(tag, className, ...children) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  el.append(...children.filter(c => c !== null && c !== undefined));
+  return el;
+}
+
+function decodeBase64(b64) {
+  const text = atob(b64);
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i);
+  return out;
+}
+
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (e) { return undefined; }
+}
+
+function clock(ts) {
+  return new Date(ts * 1000).toLocaleTimeString('en-GB');
+}
+
+function firstLine(text) {
+  return String(text).split('\n').find(line => line.trim()) || '';
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+// The same comparison as the dashboard: key order and cache_control never matter.
+function inputKey(value) {
+  const strip = v => {
+    if (Array.isArray(v)) return v.map(strip);
+    if (v && typeof v === 'object') {
+      const out = {};
+      for (const k of Object.keys(v).sort()) if (k !== 'cache_control') out[k] = strip(v[k]);
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(strip(value === undefined ? {} : value));
+}
+
+function keyArgument(name, input) {
+  input = input && typeof input === 'object' ? input : {};
+  const named = input[KEY_ARGS[name]];
+  if (typeof named === 'string') return named;
+  const field = Object.keys(input).find(k => typeof input[k] === 'string');
+  return field ? input[field] : '';
+}
+
+function modeLabel(mode) {
+  return mode === 'bypassPermissions' ? '⚠ bypassPermissions' : mode;
+}
+
+// ---- Hook events to state (SPEC D17b) -------------------------------------------------
+
+function onHook(hook, ts) {
+  if (!hook || typeof hook !== 'object' || Array.isArray(hook)) return;
+  hookCount++;
+  const s = getSession(String(hook.session_id || 'unknown'));
+  if (typeof hook.cwd === 'string') s.cwd = hook.cwd;
+  noteMode(s, hook.permission_mode, ts);
+  const id = typeof hook.tool_use_id === 'string' ? hook.tool_use_id : null;
+
+  switch (hook.hook_event_name) {
+    case 'UserPromptSubmit': {
+      settle(s, 'no result before the next prompt');
+      const text = typeof hook.prompt === 'string' ? hook.prompt.trim() : '';
+      if (!s.firstPrompt) s.firstPrompt = firstLine(text);
+      timeline.push({ type: 'prompt', ts, session: s, text });
+      break;
+    }
+    case 'Stop':
+      settle(s, 'no result before Stop');
+      timeline.push({ type: 'stop', ts, session: s });
+      break;
+    case 'PreToolUse':
+      if (id && !s.calls.has(id)) addCall(s, hook, id, ts);
+      break;
+    case 'PermissionRequest': {
+      const call = (id && (s.calls.get(id) || addCall(s, hook, id, ts))) || matchCall(s, hook) || addCall(s, hook, null, ts);
+      const perm = { type: 'request', ts, session: s, call, asked: true, status: 'pending', reason: '', inferred: false };
+      call.perm = perm;
+      s.open.push(perm);
+      permEvents.push(perm);
+      break;
+    }
+    case 'PostToolUse': {
+      const call = callFor(s, hook, id, ts);
+      call.state = 'done';
+      if (call.perm) decide(call.perm, 'allowed', 'the tool ran (PostToolUse)', false);
+      break;
+    }
+    case 'PostToolUseFailure': {
+      const call = callFor(s, hook, id, ts);
+      const error = typeof hook.error === 'string' ? hook.error : JSON.stringify(hook.error || hook.tool_response || '');
+      if (DENIAL.test(error)) {
+        call.state = 'denied';
+        deny(call, 'PostToolUseFailure reported a denial');
+      } else {
+        call.state = 'failed';
+        if (call.perm) decide(call.perm, 'allowed', 'the tool ran and failed', false);
+      }
+      break;
+    }
+    case 'PermissionDenied': {  // newer Claude Code versions report this directly
+      const call = callFor(s, hook, id, ts);
+      call.state = 'denied';
+      deny(call, 'PermissionDenied hook');
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function addCall(s, hook, id, ts) {
+  const call = {
+    type: 'call', ts, session: s, id, name: String(hook.tool_name || '?'), input: hook.tool_input,
+    key: inputKey(hook.tool_input), state: 'running', perm: null,
+  };
+  if (id) s.calls.set(id, call);
+  timeline.push(call);
+  return call;
+}
+
+function callFor(s, hook, id, ts) {
+  return (id && s.calls.get(id)) || matchCall(s, hook) || addCall(s, hook, id, ts);
+}
+
+// A request without tool_use_id belongs to the latest unfinished call with the
+// same tool and input that has no request yet.
+function matchCall(s, hook) {
+  const name = String(hook.tool_name || '?');
+  const key = inputKey(hook.tool_input);
+  const calls = [...s.calls.values()];
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const c = calls[i];
+    if (c.state === 'running' && !c.perm && c.name === name && c.key === key) return c;
+  }
+  return null;
+}
+
+function deny(call, reason) {
+  if (call.perm) {
+    decide(call.perm, 'denied', reason, false);
+    return;
+  }
+  // Denied without a prompt (a deny rule, a hook, or the mode).
+  call.perm = { type: 'request', ts: call.ts, session: call.session, call, asked: false, status: 'denied', reason, inferred: false };
+  permEvents.push(call.perm);
+}
+
+// Explicit evidence always wins; an inference only settles a request still pending.
+function decide(perm, status, reason, inferred) {
+  if (inferred && perm.status !== 'pending') return;
+  perm.status = status;
+  perm.reason = reason;
+  perm.inferred = inferred;
+  perm.session.open = perm.session.open.filter(p => p !== perm);
+  if (status === 'denied' && perm.call.state === 'running') perm.call.state = 'denied';
+}
+
+function settle(s, reason) {
+  for (const perm of [...s.open]) decide(perm, 'denied', `inferred: ${reason}`, true);
+}
+
+function noteMode(s, mode, ts) {
+  if (typeof mode !== 'string' || !mode || mode === s.mode) return;
+  const change = { type: 'mode', ts, session: s, from: s.mode, to: mode };
+  s.mode = mode;
+  permEvents.push(change);
+  if (change.from !== null) timeline.push(change);
+}
+
+// ---- Rendering --------------------------------------------------------------------
+
+function visible(list) {
+  return chosen ? list.filter(x => x.session === chosen) : list;
+}
+
+function sessionTag(s) {
+  return chosen || sessions.size < 2 ? null : h('span', 'sid', s.short);
+}
+
+function badge(perm) {
+  if (!perm) return null;
+  const text = perm.asked ? OUTCOME[perm.status] : '✕ denied';
+  const b = h('span', `badge ${perm.status}`, text);
+  b.title = perm.asked
+    ? `permission prompt at ${clock(perm.ts)}${perm.reason ? ` · ${perm.reason}` : ''}`
+    : `denied without a prompt · ${perm.reason}`;
+  return b;
+}
+
+const STATE_TEXT = { running: 'running…', done: 'done', failed: '✕ failed', denied: '✕ not run (denied)' };
+
+function drawItem(item) {
+  if (item.type === 'prompt') {
+    return h('div', 'item prompt', sessionTag(item.session), h('span', 'label', 'YOU'), firstLine(item.text) || '(empty prompt)');
+  }
+  if (item.type === 'mode') {
+    return h('div', 'item divider', sessionTag(item.session), `— permission mode: ${item.from} → ${item.to} —`);
+  }
+  if (item.type === 'stop') {
+    return h('div', 'item divider', sessionTag(item.session), `─ turn ended · ${clock(item.ts)} ─`);
+  }
+  const card = h('div', 'item card');
+  if (item.perm && item.perm.status === 'denied') card.classList.add('denied');
+  const arg = h('span', 'arg', firstLine(keyArgument(item.name, item.input)));
+  arg.title = JSON.stringify(item.input, null, 2) || '';
+  card.append(h('div', 'line', sessionTag(item.session), h('span', 'name', `→ ${item.name}`), arg, badge(item.perm)));
+  card.append(h('div', 'line', h('span', 'name', '←'), h('span', 'state', STATE_TEXT[item.state] || item.state)));
+  return card;
+}
+
+function drawRow(e) {
+  const where = h('span', 'where', h('span', 'sid', e.session.short));
+  if (e.type === 'mode') {
+    return h('div', 'perm', h('span', 'time', clock(e.ts)), where,
+      h('span', 'event', e.from === null ? 'mode' : 'mode change'),
+      h('span', 'what', e.from === null ? `${modeLabel(e.to)} (first seen)` : `${e.from} → ${modeLabel(e.to)}`),
+      h('span', 'outcome', '—'));
+  }
+  const call = e.call;
+  const what = h('span', 'what', `${call.name}  ${firstLine(keyArgument(call.name, call.input))}`);
+  what.title = JSON.stringify(call.input, null, 2) || '';
+  const outcome = e.status === 'pending' ? '? pending…' : e.status === 'allowed' ? '✓ allowed' : '✕ denied';
+  return h('div', 'perm', h('span', 'time', clock(e.ts)), where,
+    h('span', 'event', e.asked ? 'request' : 'denial'), what,
+    h('span', `outcome ${e.status}`, outcome, e.reason ? h('span', 'why', e.reason) : null));
+}
+
+function drawSidebar() {
+  const entries = [null, ...sessions.values()].map(s => {
+    const entry = h('button', 'entry');
+    entry.type = 'button';
+    entry.setAttribute('aria-current', String(s === chosen));
+    entry.addEventListener('click', () => { chosen = s; draw(); });
+    if (!s) {
+      entry.append(h('span', 'row', h('span', null, 'all sessions'), h('span', null, String(sessions.size))));
+      return entry;
+    }
+    const waiting = s.open.length > 0;
+    const dot = h('span', null, waiting ? '● asking' : '');
+    if (waiting) dot.title = 'a permission prompt is waiting for a decision';
+    entry.append(h('span', 'row', h('span', null, `session ${s.short}`), dot));
+    entry.append(h('span', 'snippet', `mode: ${s.mode ? modeLabel(s.mode) : 'unknown'}`));
+    const about = s.firstPrompt || s.cwd;
+    if (about) entry.append(h('span', 'snippet', about));
+    return entry;
+  });
+  document.getElementById('sessions').replaceChildren(...entries);
+  document.getElementById('conn').textContent = connected ? `live · ${plural(hookCount, 'hook event')}` : 'reconnecting…';
+}
+
+function drawSummary() {
+  const requests = visible(permEvents).filter(e => e.type === 'request' && e.asked);
+  const count = status => requests.filter(r => r.status === status).length;
+  const parts = [];
+  if (chosen) {
+    parts.push('permission mode: ', h('strong', null, chosen.mode ? modeLabel(chosen.mode) : 'unknown'), ` · session ${chosen.short}`);
+  } else if (sessions.size) {
+    parts.push('permission mode: ');
+    [...sessions.values()].forEach((s, i) => parts.push(i ? ' · ' : '', `${s.short} `, h('strong', null, s.mode ? modeLabel(s.mode) : 'unknown')));
+  } else {
+    parts.push('permission mode: ', h('strong', null, 'unknown'));
+  }
+  parts.push(` · ${requests.length} asked · ${count('allowed')} allowed · ${count('denied')} denied · ${count('pending')} pending`);
+  document.getElementById('summary').replaceChildren(...parts);
+  document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+}
+
+function draw() {
+  frameQueued = false;
+  const following = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
+  drawSidebar();
+  drawSummary();
+  if (!hookCount) {
+    log.replaceChildren(h('div', 'empty', 'No hook events yet. Run ', h('code', null, 'python3 install_hooks.py'),
+      ' once, then restart Claude Code. Hook events appear here as they arrive.'));
+    return;
+  }
+  if (tab === 'timeline') {
+    const items = visible(timeline);
+    log.replaceChildren(...(items.length ? items.map(drawItem) : [h('div', 'empty', 'Nothing in this session yet.')]));
+  } else {
+    const rows = visible(permEvents);
+    log.replaceChildren(h('div', 'cols', ...['time', 'session', 'event', 'tool / change', 'outcome'].map(t => h('span', null, t))),
+      ...(rows.length ? rows.map(drawRow) : [h('div', 'empty', 'No permission events yet.')]));
+  }
+  if (following) pane.scrollTop = pane.scrollHeight;
+}
+
+function queueFrame() {
+  if (!frameQueued && synced) {
+    frameQueued = true;
+    requestAnimationFrame(draw);
+  }
+}
+
+document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => {
+  tab = b.dataset.tab;
+  draw();
+}));
+
+// ---- Connection: full replay, then live (SPEC D10) ----------------------------------
+
+function onRawEvent(event) {
+  if (event.seq <= lastSeq) return;
+  lastSeq = event.seq;
+  try {
+    onHook(parseJson(new TextDecoder().decode(decodeBase64(event.body || ''))), event.ts);
+  } catch (e) {
+    console.error('could not process hook event', event.seq, e);
+  }
+  queueFrame();
+}
+
+function connect() {
+  const source = new EventSource('/events');
+  source.addEventListener('hello', e => {
+    const boot = JSON.parse(e.data).boot;
+    if (bootId && bootId !== boot) location.reload();  // the server restarted: start empty
+    bootId = boot;
+    connected = true;
+    queueFrame();
+  });
+  source.addEventListener('synced', () => {
+    synced = true;
+    queueFrame();
+  });
+  source.onmessage = e => onRawEvent(JSON.parse(e.data));
+  source.onerror = () => {
+    connected = false;
+    queueFrame();
+    if (source.readyState === EventSource.CLOSED) setTimeout(connect, 2000);
+  };
+}
+
+connect();
+</script>
+</body>
+</html>
