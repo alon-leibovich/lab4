@@ -39,7 +39,7 @@ Tier 1 + 2.
 
 - **Tier 1 (core):** D1–D12, D14, D15, D16.
 - **Tier 2 (extended):** D17 (sessions and persistence), D18 (permissions),
-  D19 (optional hooks).
+  D19 (optional hooks), D22 (working directory and update tree).
 
 ## 2. Context: what the proxy sees today
 
@@ -487,6 +487,96 @@ does not carry (permission prompts and decisions, exact permission mode).
   `SessionStart`, `SessionEnd`. Hook events are attached to sessions by
   `session_id` and to tool cards by `tool_use_id`.
 
+### D22. Working directory and update tree (Tier 2)
+
+A **Files** tab next to the timeline (and the Permissions tab) answers two
+questions for the selected session: *where is Claude working?* and *what has
+it changed, when, and why?* Like everything else it is rebuilt in the browser
+from the raw traffic (D9a). It needs no hooks and no change to `proxy.py` or
+the monitor.
+
+**Working directory.**
+- Read from the injected environment context (D3a), the line
+  `Primary working directory: <path>`. In real traffic it arrives in a
+  `role: "system"` message inside `messages`, not in the `system` prompt, and
+  a mid-session change arrives as `# Environment update` with
+  `Primary working directory: <new> (was <old>)`. The last such line in a
+  request wins.
+- The Files tab header shows the current directory. If it changed during the
+  session, `changed N×` expands to the list of changes with times. The status
+  bar's directory (D16) uses the same value.
+
+**Update tree.**
+- Every `Write`, `Edit`, `MultiEdit` and `NotebookEdit` tool call is an
+  **update** to one file. Relative paths are resolved against the working
+  directory at that moment.
+- Files are shown as a **folder tree rooted at the directory the session
+  started in** (the project folder), so a later `cd` into a subfolder does not
+  move earlier files. Files outside it are listed under
+  `Outside the project folder`. Folders start open, files start collapsed, and
+  single-child folder chains collapse into one row (`src/app/`).
+- A file row shows its name, number of updates, net `+added −removed` lines
+  (successful updates only), `read N×` if Claude read it, badges `+ new`
+  (created in this session), `✗ N failed`, `… N pending`, and the time of the
+  last update.
+- Expanding a file shows its **timeline of updates**, oldest first:
+  time, status (`✓ done`, `✗ failed`, `⊘ denied`, `… pending`, always as text
+  and not color alone), tool, `created` / `edited` / `overwritten`,
+  `+a −r` or `N lines`, the **typed prompt** that led to it (D3a's typed text,
+  the latest one before the tool call), a `diff` toggle and a `raw` link (D14).
+- **Status** comes from the matching `tool_result` (D4): `is_error` with
+  denial text → `denied` (same rule as D18), other `is_error` → `failed`, no
+  result yet → `pending`. Failed and denied updates are shown struck through
+  with their error text and are not counted in the totals.
+- **Created vs overwritten:** Claude Code's `Write` result says
+  `File created successfully` for a new file and `has been updated
+  successfully` otherwise.
+- **Diff:** `Edit` / `MultiEdit` diff `old_string` against `new_string`
+  (each edit separately). `Write` diffs against the file's content as last
+  seen in this session (from an earlier `Write`, followed by later edits).
+  When that is unknown, it shows the written lines and the note
+  `previous content unknown`. The diff shows changed lines with 2 lines of
+  context and `… N unchanged lines` between hunks.
+- Requests resend the whole history, so updates are de-duplicated by
+  `tool_use_id`. An update appears as soon as its `tool_use` block finishes
+  streaming, and its status fills in when the result arrives.
+- Subagent updates are included, since they change the same project.
+- **Shell commands are not parsed.** `Bash` can also change files, but the
+  monitor cannot know which ones reliably, so the tab only states
+  `Shell: N commands ran. Files changed by shell commands are not tracked here.`
+
+**Implementation.** One self-contained, stdlib-free browser module,
+`worktree.js`. The page calls `tracker.feed(rawEvent)` for every raw event,
+in replay and live, and mounts the panel with
+`WorkTree.createPanel(el, tracker, {onRaw})`. It defaults to the most recently
+active session; `panel.setSession(id)` follows the D17 session picker.
+Sessions are keyed like D17: `session_id` inside `metadata.user_id` (a JSON
+string in current Claude Code). The `x-claude-code-session-id` header is only
+a fallback, because the monitor redacts header names containing `session`
+(D15). In the integrated page the module is given D3a's classifier
+(`typedText` option), so the injected-text patterns stay in one place. A
+standalone `worktree-demo.html` replays sample traffic or a saved raw-event
+file, for testing without the monitor.
+
+```
+Files · Permissions
+WORKING DIRECTORY  /home/alon/lab4/monitor   changed 1× ▾
+  Tree below is rooted at the project folder the session started in: /home/alon/lab4
+UPDATE TREE  4 files · 6 updates · 1 failed or denied   [expand all] [collapse all]
+▾ lab4/
+  ▸ SPEC.md       ✎ 1 update  +4 −0  read 1×           11:22:45
+  ▾ monitor.py    ✎ 3 updates +8 −1  + new  ✗ 1 failed  11:23:45
+      11:22:25  ✓ done   Write  created  6 lines  "Start the monitor…"  [diff] [raw]
+      11:22:45  ✓ done   Edit   edited   +2 −1    "Start the monitor…"  [diff] [raw]
+      11:23:45  ✗ failed Edit   edited   +1 −1    "fix the port"        [diff] [raw]
+                String to replace not found in file.
+  ▾ hooks/
+    ▸ forward.py  ✎ 1 update  +3 −0  + new             11:22:25
+Outside the project folder
+  ▸ tmp/monitor-notes.txt  ✎ 1 update  +1 −0  + new
+Shell: 1 command ran. Files changed by shell commands are not tracked here.
+```
+
 ## 4. Open decisions
 
 - D2c. How "main", "subagent" and "side call" are told apart (e.g. by model,
@@ -584,6 +674,14 @@ Manual checks to run during the lab. Setup, in three terminals:
   `.claude/settings.local.json` changes. Allowed tool calls show
   `asked → allowed`. Stopping the monitor does not interrupt Claude Code's
   hooks.
+- [ ] **Working directory and update tree (D22).** Ask Claude to create
+  `notes/todo.md` and then edit an existing file twice. The Files tab shows
+  the session's working directory, a tree with `notes/todo.md` (`+ new`) and
+  the edited file (`✎ 2 updates`). Expanding the file lists both edits with
+  time, `✓ done`, `+a −r`, the prompt that caused them, a working `diff` and
+  a `raw` link. Deny one edit: it appears as `⊘ denied`, struck through, and
+  is not counted in the totals. Start Claude Code in a subfolder or `cd`
+  mid-session: the header shows the new directory and `changed 1×`.
 
 ## 6. Changes since the last build
 
@@ -611,3 +709,8 @@ raw-only (D2).
 dashboard built into `proxy.py`; it now runs as a separate `monitor.py` in
 front of the unchanged proxy (D9), with the agent pointed at port 8040.
 Everything the dashboard shows is unchanged.
+
+**Added after revision 3:** D22, a Files tab that tracks the session's working
+directory and shows a tree of every file Claude wrote or edited, each with a
+timeline of its updates (status, prompt, diff). Tier 2. Built from traffic
+only; no change to `proxy.py`.
